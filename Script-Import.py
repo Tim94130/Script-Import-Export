@@ -32,7 +32,7 @@ def renommer_colonnes_pour_woocommerce(df):
         "Images": "Images",
         "Garantie": "Warranty",
         "Pays de fabrication": "Country of manufacture",
-        "Marque": "Brand"
+        "Marque": "Brands"
     }
     df.rename(columns=correspondance_woocommerce, inplace=True)
     return df
@@ -60,7 +60,7 @@ def supprimer_doublons_colonnes(df):
         "Images": "Images",
         "Garantie": "Warranty",
         "Pays de fabrication": "Country of manufacture",
-        "Marque": "Brand"
+        "Marque": "Brands"
     }
     colonnes_presentes = df.columns
     colonnes_a_supprimer = [fr_col for fr_col, en_col in correspondance_woocommerce.items() 
@@ -94,7 +94,7 @@ def formatter_images(df):
     """
     Fusionne les colonnes d'images en une seule colonne "Images" en y ajoutant l'URL de base.
     """
-    base_url = "http://localhost/Yolo-baby/wp-content/uploads/image-site/"
+    base_url = "http://yolobaby.online/wp-content/uploads/image-site/"
     colonnes_images = [
         "Image principale",
         "Image supplémentaire n°1",
@@ -140,9 +140,7 @@ def formater_produits(df):
     df['Name'] = df["Nom de l'article (en Français)"]
     df['Short description'] = df['Description courte (en Français)']
     df['Description'] = df['Description (en Français)']
-    if 'Brand' in df.columns:
-        df['Tags'] = df['Brand'].apply(lambda x: ', '.join(map(str, str(x).split('|'))) if pd.notnull(x) else '')
-    return df
+    df['Brands'] = df['Marque']
 
 ############################################
 # Fonctions de détection de couleurs
@@ -167,7 +165,7 @@ mapping_couleurs = {
     "white": "Blanc",
     "black": "Noir",
     "brown": "Marron",
-    "blue": "Bleu",
+    "blue": "Bleu" "Aqua",
     "red": "Rouge",
     "pink": "Rose",
     "green": "Vert",
