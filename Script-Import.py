@@ -165,7 +165,8 @@ mapping_couleurs = {
     "white": "Blanc",
     "black": "Noir",
     "brown": "Marron",
-    "blue": "Bleu" "Aqua",
+    "blue": "Bleu",
+    "aqua": "Bleu",         # Aqua traité comme Bleu
     "red": "Rouge",
     "pink": "Rose",
     "green": "Vert",
@@ -176,6 +177,7 @@ mapping_couleurs = {
     "purple": "Violet",
     "violet": "Violet",
     "beige": "Beige",
+    "taupe": "Beige",       # Taupe traité comme Beige
     "gold": "Doré",
     "silver": "Argent",
     "blanc": "Blanc",
@@ -252,21 +254,24 @@ def creer_produits_grouped_et_variables_par_couleur(df):
           * S'il y a plusieurs lignes, on crée :
               - Une ligne parent (Type = "variable") qui agrège toutes les couleurs uniques détectées dans "Couleurs Normalisées".
               - Une ligne variation par couleur unique (Type = "variation") avec Parent = SKU du parent.
-              - Pour chaque variation, la galerie complète d'images du parent est affectée (champ "Images").
-              - De plus, pour éviter les erreurs de GTIN/EAN dupliqués, la colonne "Code EAN" est vidée pour les variations.
+              - Pour chaque variation, on affecte la galerie d’images propre à la couleur (ou celle du parent en fallback).
+              - Le titre de la variation est reconstruit à partir du "Nom Base" et de la couleur.
+              - La colonne "Code EAN" est vidée pour les variations.
               
-    Hypothèses :
-      - df["Couleurs Normalisées"] contient une chaîne de couleurs séparées par des virgules (ex: "Rouge, Vert").
-      - La fonction nom_sans_couleur() extrait le "Nom Base" à partir de "Name".
-      - Le SKU du parent est celui de la première ligne du groupe.
-      - Pour les variations, le SKU est formé du SKU parent + "-" + la couleur en minuscules.
+      De plus, le produit parent se voit attribuer un attribut par défaut ("Default attribute 1") afin que la couleur
+      par défaut soit pré-sélectionnée sur la fiche produit.
     """
+    from collections import defaultdict
+
     rows = []
+    # Extraction du "Nom Base" sans la partie couleur
     df["Nom Base"] = df["Name"].apply(nom_sans_couleur)
     groupes = df.groupby("Nom Base", dropna=False)
     
     for base_name, group in groupes:
         print(f"\n>>> Traitement du groupe : '{base_name}' avec {len(group)} ligne(s)")
+        
+        # CAS 1 : Nom Base contenant "pack" => produit groupé
         if "pack" in base_name.lower():
             parent = group.iloc[0].copy()
             sku_parent = str(parent.get("SKU", ""))
@@ -280,80 +285,142 @@ def creer_produits_grouped_et_variables_par_couleur(df):
             parent["Variations"] = ""
             rows.append(parent)
             print(f"  -> Produit groupé créé (SKU: {sku_parent})")
+
             for _, row_src in group.iterrows():
                 enfant = row_src.copy()
                 enfant["Type"] = "simple"
                 enfant["Parent"] = sku_parent
                 rows.append(enfant)
                 print(f"     -> Enfant groupé ajouté (SKU: {enfant.get('SKU', '')})")
+
+        # CAS 2 : Nom Base unique => produit simple
+        elif len(group) == 1:
+            simple = group.iloc[0].copy()
+            simple["Type"] = "simple"
+            simple["Parent"] = ""
+            simple["Variations"] = ""
+            rows.append(simple)
+            print(f"  -> Produit simple (SKU: {simple.get('SKU', '')})")
+
+        # CAS 3 : Nom Base commun à plusieurs lignes => produit variable
         else:
-            if len(group) == 1:
-                simple = group.iloc[0].copy()
-                simple["Type"] = "simple"
-                simple["Parent"] = ""
-                simple["Variations"] = ""
-                rows.append(simple)
-                print(f"  -> Produit simple (SKU: {simple.get('SKU', '')})")
-            else:
-                parent = group.iloc[0].copy()
-                sku_parent = str(parent.get("SKU", ""))
-                set_couleurs = set()
+            parent = group.iloc[0].copy()
+            sku_parent = str(parent.get("SKU", ""))
+            set_couleurs = set()
+            color_to_images = defaultdict(list)
+            
+            # Récupération des couleurs et des images associées pour chaque ligne
+            for _, row_src in group.iterrows():
+                c_str = row_src.get("Couleurs Normalisées", "")
+                row_images = row_src.get("Images", "")
+                print(f"[DEBUG] Ligne SKU='{row_src.get('SKU','')}' => Couleurs Normalisées: '{c_str}'")
+                print(f"[DEBUG] Ligne SKU='{row_src.get('SKU','')}' => Images: '{row_images}'")
+
+                if c_str:
+                    couleurs_de_ligne = [couleur.strip() for couleur in c_str.split(",") if couleur.strip()]
+                    for coul in couleurs_de_ligne:
+                        set_couleurs.add(coul)
+                        if isinstance(row_images, str) and row_images.strip():
+                            color_to_images[coul].append(row_images)
+            
+            # Si aucune couleur n'est détectée, on traite tout le groupe comme simple
+            if not set_couleurs:
+                print(f"⚠️ Aucune couleur détectée pour '{base_name}', traité comme produit simple.")
                 for _, row_src in group.iterrows():
-                    c_str = row_src.get("Couleurs Normalisées", "")
-                    if c_str:
-                        for coul in c_str.split(","):
-                            coul = coul.strip()
-                            if coul:
-                                set_couleurs.add(coul)
-                if not set_couleurs:
-                    print(f"⚠️ Aucune couleur détectée pour '{base_name}', traité comme produit simple.")
-                    for _, row_src in group.iterrows():
-                        simple = row_src.copy()
-                        simple["Type"] = "simple"
-                        simple["Parent"] = ""
-                        simple["Variations"] = ""
-                        rows.append(simple)
+                    simple = row_src.copy()
+                    simple["Type"] = "simple"
+                    simple["Parent"] = ""
+                    simple["Variations"] = ""
+                    rows.append(simple)
+            else:
+                # Création du produit parent variable
+                parent["Type"] = "variable"
+                parent["Parent"] = ""
+                parent["Attribute 1 name"] = "Couleur"
+                parent["Attribute 1 value(s)"] = ", ".join(sorted(set_couleurs))
+                parent["Attribute 1 visible"] = "yes"
+                parent["Attribute 1 variation"] = "yes"
+                parent["Attribute 1 global"] = "yes"
+                parent["Variations"] = ", ".join(sorted(set_couleurs))
+
+                # Définir la couleur par défaut
+                default_color = None
+                for coul in sorted(set_couleurs):
+                    if coul.lower() in parent["Name"].lower():
+                        default_color = coul
+                        break
+                if default_color is None:
+                    default_color = sorted(set_couleurs)[0]
+                parent["Default attribute 1"] = default_color
+
+                rows.append(parent)
+                print(f"  -> Produit parent variable créé (SKU: {sku_parent}) avec couleurs : {', '.join(sorted(set_couleurs))}")
+                print(f"     Couleur par défaut définie : {default_color}")
+
+                # Galerie d'images par défaut du parent
+                images_parent = ""
+                if "Images" in parent and parent["Images"]:
+                    images_parent = parent["Images"].strip()
+                    print(f"     -> Galerie du parent (SKU: {sku_parent}): {images_parent}")
                 else:
-                    parent["Type"] = "variable"
-                    parent["Parent"] = ""
-                    parent["Attribute 1 name"] = "Couleur"
-                    parent["Attribute 1 value(s)"] = ", ".join(sorted(set_couleurs))
-                    parent["Attribute 1 visible"] = "yes"
-                    parent["Attribute 1 variation"] = "yes"
-                    parent["Attribute 1 global"] = "yes"
-                    parent["Variations"] = ", ".join(sorted(set_couleurs))
-                    rows.append(parent)
-                    print(f"  -> Produit parent variable créé (SKU: {sku_parent}) avec couleurs : {', '.join(sorted(set_couleurs))}")
-                    
-                    images_parent = ""
-                    if "Images" in parent and parent["Images"]:
-                        images_parent = parent["Images"].strip()
-                        print(f"     -> Galerie du parent (SKU: {sku_parent}): {images_parent}")
+                    print(f"     -> Aucune image définie pour le parent (SKU: {sku_parent}).")
+
+                # Création des variations par couleur
+                for coul in sorted(set_couleurs):
+                    variation = parent.copy()
+                    variation["SKU"] = f"{sku_parent}-{coul.lower()}"
+                    variation["Type"] = "variation"
+                    variation["Parent"] = sku_parent
+                    variation["Attribute 1 name"] = "Couleur"
+                    variation["Attribute 1 value(s)"] = coul
+                    variation["Attribute 1 visible"] = "yes"
+                    variation["Attribute 1 variation"] = "yes"
+                    variation["Attribute 1 global"] = "yes"
+                    variation["Variations"] = ""
+                    variation["Description"] = ""
+                    variation["Short description"] = ""
+
+                    # Reconstruction du titre
+                    if "Nom Base" in variation:
+                        variation["Name"] = f"{variation['Nom Base']} - {coul}"
                     else:
-                        print(f"     -> Aucune image définie pour le parent (SKU: {sku_parent}).")
+                        variation["Name"] = f"{parent['Name']} - {coul}"
+
+                    # Affectation des images spécifiques à la couleur
+                    liste_images_couleur = []
+                    if coul in color_to_images:
+                        for bloc_img in color_to_images[coul]:
+                            for url_img in bloc_img.split(","):
+                                url_img = url_img.strip()
+                                if url_img:
+                                    liste_images_couleur.append(url_img)
+                                    print(f"[DEBUG] Couleur '{coul}' => url_img = {url_img}")
                     
-                    for coul in sorted(set_couleurs):
-                        variation = parent.copy()
-                        variation["SKU"] = f"{sku_parent}-{coul.lower()}"
-                        variation["Type"] = "variation"
-                        variation["Parent"] = sku_parent
-                        variation["Attribute 1 name"] = "Couleur"
-                        variation["Attribute 1 value(s)"] = coul
-                        variation["Attribute 1 visible"] = "yes"
-                        variation["Attribute 1 variation"] = "yes"
-                        variation["Attribute 1 global"] = "yes"
-                        variation["Variations"] = ""
-                        variation["Description"] = ""
-                        variation["Short description"] = ""
-                        # Affecter la galerie complète du parent à la variation
+                    # Log de la liste avant fallback
+                    print(f"[DEBUG] Couleur '{coul}' => liste_images_couleur = {liste_images_couleur}")
+                    
+                    # Suppression des doublons en conservant l'ordre
+                    liste_images_couleur = list(dict.fromkeys(liste_images_couleur))
+
+                    if len(liste_images_couleur) == 0:
                         variation["Images"] = images_parent
-                        # Pour éviter les erreurs de GTIN/EAN dupliqués, on vide la colonne "Code EAN"
+                        print(f"[DEBUG] Couleur '{coul}' => Aucune image, fallback sur le parent: {images_parent}")
+                    else:
+                        variation["Images"] = ", ".join(liste_images_couleur)
+                        print(f"[DEBUG] Couleur '{coul}' => Images variation: {variation['Images']}")
+
+                    # Vidage de "Code EAN" pour éviter les duplications
+                    if "Code EAN" in variation:
                         variation["Code EAN"] = ""
-                        rows.append(variation)
-                        print(f"  -> Variation créée pour '{base_name}' : Couleur = {coul}, SKU = {variation['SKU']}, Images = {variation['Images']}")
-                        
+
+                    rows.append(variation)
+                    print(f"  -> Variation créée pour '{base_name}' : Couleur = {coul}, SKU = {variation['SKU']}, Name = {variation['Name']}")
+                    print(f"     Images de la variation : {variation['Images']}")
+
     df_res = pd.DataFrame(rows)
     return df_res
+
+
 
 ############################################
 # Fonction principale
