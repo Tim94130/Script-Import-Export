@@ -3,8 +3,11 @@ import pandas as pd
 from tkinter import Tk, filedialog
 import os
 import re
+import json
+import unicodedata
 from collections import defaultdict
 from rapidfuzz import process, fuzz  # Si nécessaire
+
 
 # Définitions globales pour la détection des couleurs
 adjectifs_ignores = [
@@ -15,48 +18,90 @@ adjectifs_ignores = [
 couleurs_base = [
     "white", "black", "brown", "blue", "red", "pink", "green", 
     "grey", "gray", "yellow", "orange", "purple", "violet",
-    "beige", "gold", "silver", 
-    "cyan", "magenta", "navy", "maroon", "lime", "olive", "teal", "aqua",
+    "beige", "gold", "silver", "taupe", "cyan", "magenta",
+    "navy", "maroon", "lime", "olive", "teal", "aqua",
     "blanc", "noir", "marron", "brun", "bleu", "rouge", "rose", 
     "vert", "gris", "jaune", "violet", "beige", "doré", "argent", "kaki",
-    "turquoise", "fuchsia", "lavande", "ocre", "ivory", "ivoires", "argenté"
+    "turquoise", "fuchsia", "lavande", "ocre", "ivory", "ivoires", "argenté",
+    "rose gold", "off white", "peach pink", "sepia black", "golden",
+    "sable", "chocolat", "prune" ,"dark brown"
 ]
 
 mapping_couleurs = {
     "white": "Blanc",
+    "off white": "Blanc cassé",
+    "ivory": "Blanc cassé",
+    "blanc": "Blanc",
+    "dark brown": "Marron",
     "black": "Noir",
+    "noir": "Noir",
+    "sepia black": "Noir",
+    
     "brown": "Marron",
-    "blue": "Bleu",
-    "aqua": "Bleu",         # Aqua traité comme Bleu
+    "brun": "Marron",
+    "marron": "Marron",
+    "chocolat": "Marron",
+    
     "red": "Rouge",
+    "rouge": "Rouge",
+    
     "pink": "Rose",
+    "rose": "Rose",
+    "peach pink": "Rose",
+    
     "green": "Vert",
+    "vert": "Vert",
+    "leaf green": "Vert",
+    
     "grey": "Gris",
     "gray": "Gris",
+    "gris": "Gris",
+    "mirage grey": "Gris",
+    
     "yellow": "Jaune",
+    "jaune": "Jaune",
+    
     "orange": "Orange",
+    
     "purple": "Violet",
     "violet": "Violet",
+    "lavande": "Violet",
+    "prune": "Violet",
+    
     "beige": "Beige",
-    "taupe": "Beige",       # Taupe traité comme Beige
+    "sable": "Beige",
+    "taupe": "Taupe",
+    
     "gold": "Doré",
+    "golden": "Doré",
+    "rose gold": "Rose Gold",
+    
     "silver": "Argent",
-    "blanc": "Blanc",
-    "noir": "Noir",
-    "marron": "Marron",
-    "brun": "Marron",
-    "bleu": "Bleu",
-    "rouge": "Rouge",
-    "rose": "Rose",
-    "vert": "Vert",
-    "gris": "Gris",
-    "jaune": "Jaune",
-    "doré": "Doré",
     "argent": "Argent",
+    "argenté": "Argent",
+    
     "kaki": "Kaki",
-    "fushia": "Fuchsia",
-    "whiteoff": "Blanc cassé",
+    
+    "fuchsia": "Fuchsia",
+    "magenta": "Fuchsia",
+    
+    "blue": "Bleu",
+    "bleu": "Bleu",
+    "navy": "Bleu marine",
+    "cyan": "Cyan",
+    "aqua": "Cyan",
+    "turquoise": "Turquoise",
+    
+    "maroon": "Bordeaux",
+    "bordeaux": "Bordeaux",
+    
+    "lime": "Vert clair",
+    "olive": "Vert olive",
+    
+    "teal": "Bleu-vert"
 }
+
+
 
 ############################################
 # Fonctions de transformation du CSV
@@ -109,8 +154,10 @@ def supprimer_doublons_colonnes(df):
         "Marque": "Brands"
     }
     colonnes_presentes = df.columns
-    colonnes_a_supprimer = [fr_col for fr_col, en_col in correspondance_woocommerce.items() 
-                            if fr_col in colonnes_presentes and en_col in colonnes_presentes]
+    colonnes_a_supprimer = [
+        fr_col for fr_col, en_col in correspondance_woocommerce.items() 
+        if fr_col in colonnes_presentes and en_col in colonnes_presentes
+    ]
     df.drop(columns=colonnes_a_supprimer, inplace=True, errors='ignore')
     return df
 
@@ -151,331 +198,248 @@ def formatter_images(df):
     if not colonnes_existantes:
         print("⚠️ Aucune colonne d'image trouvée, la colonne 'Images' ne sera pas créée.")
         return df
-    df['Images'] = df[colonnes_existantes].apply(lambda row: ", ".join([base_url + img.strip() for img in row.dropna().astype(str)]), axis=1)
+    
+    df['Images'] = df[colonnes_existantes].apply(
+        lambda row: ", ".join([base_url + img.strip() for img in row.dropna().astype(str)]),
+        axis=1
+    )
     print("🔍 Vérification des images fusionnées avec URLs complètes :")
     print(df[['SKU', 'Images']].head())
+    
     if df['Images'].isnull().all():
         print("⚠️ Aucune image fusionnée, les colonnes originales ne seront pas supprimées.")
     else:
         print("✅ Fusion des images réussie avec URLs, suppression des colonnes d'origine.")
         df.drop(columns=colonnes_existantes, inplace=True, errors='ignore')
-    return df
-
-def formater_produits(df):
-    df['Type'] = df.apply(lambda x: 'variable' if pd.notnull(x.get('Option Couleur (en Français)')) else 'simple', axis=1)
-    df['Published'] = 1
-    df['Is featured?'] = 0
-    df['Visibility in catalog'] = 'visible'
-    df['Tax status'] = 'taxable'
-    df['In stock?'] = 1
-    df['Stock'] = df.get('Stock - Quantité', 0).fillna(0)
-    df['Regular price'] = df.get('Prix pour le groupe Défaut', '').fillna('')
-    df['Sale price'] = ''
-    df['SKU'] = df['Référence']
-    df['Name'] = df["Nom de l'article (en Français)"]
-    df['Short description'] = df['Description courte (en Français)']
-    df['Description'] = df['Description (en Français)']
-    df['Brands'] = df['Marque']
+    
     return df
 
 ############################################
 # Fonctions de détection/extraction des couleurs
 ############################################
+
 def detecter_toutes_couleurs(nom_produit: str):
     if not isinstance(nom_produit, str):
         return []
+    
     tokens = re.split(r"[\s\-\|\(\),/]+", nom_produit.lower())
-    print(f"[detecter_toutes_couleurs] Produit : {nom_produit}")
-    print(f"[detecter_toutes_couleurs] Tokens  : {tokens}")
-    trouvees = []
-    for t in tokens:
-        if t in adjectifs_ignores:
-            continue
-        if t in couleurs_base:
-            trouvees.append(t)
-    if trouvees:
-        derniere_couleur_brute = trouvees[-1]
-        print(f"[detecter_toutes_couleurs] Dernière couleur détectée (brute) : {derniere_couleur_brute}")
-        derniere_couleur_fr = mapping_couleurs.get(derniere_couleur_brute.lower(), derniere_couleur_brute).title()
-        print(f"[detecter_toutes_couleurs] Dernière couleur détectée (FR) : {derniere_couleur_fr}")
-        return [derniere_couleur_fr]
-    else:
-        print(f"[detecter_toutes_couleurs] Aucune couleur détectée.")
-        return []
+    trouvees = [mapping_couleurs[t] for t in tokens if t in mapping_couleurs]
 
-def nom_sans_couleur(nom_produit: str) -> str:
-    parts = nom_produit.split("-")
-    if len(parts) > 1:
-        result = "-".join(parts[:-1]).strip()
-    else:
-        result = nom_produit.strip()
-    print(f"[nom_sans_couleur] '{nom_produit}' -> '{result}'")
-    return result
+    return list(dict.fromkeys(trouvees))  # Supprime les doublons
+
+# 📌 Fonction pour normaliser une liste de couleurs
 def normaliser_liste_couleurs(couleurs_brutes: list):
     if not couleurs_brutes:
         return ""
-    resultat = []
-    for c in couleurs_brutes:
-        c_lower = c.lower()
-        resultat.append(mapping_couleurs.get(c_lower, "Non spécifiée"))
-    resultat = list(dict.fromkeys(resultat))
-    return ", ".join(resultat)
-def extraire_siege_chassis_parentheses(nom_produit: str) -> (str, str):
-    """
-    Extrait la couleur du siège (avant la parenthèse) et la couleur du châssis (dans la parenthèse),
-    ex: "Peach Pink (Rosegold Frame)" -> ("Peach Pink", "Rosegold")
-    """
-    pattern = r"(.*?)\s*\((.*?)\)"
-    match = re.search(pattern, nom_produit)
-    if match:
-        # Partie avant la parenthèse : siège
-        seat_raw = match.group(1).strip()
-        # Partie entre parenthèses : châssis
-        chassis_raw = match.group(2).strip()
-        # Optionnel : retirer "Frame" ou autre mot superflu
-        chassis_raw = chassis_raw.replace("Frame", "").strip()
-        
-        # Appliquer un mapping/correction
-        seat_lower = seat_raw.lower()
-        chassis_lower = chassis_raw.lower()
-        seat_fr = mapping_couleurs.get(seat_lower, seat_lower).title()
-        chassis_fr = mapping_couleurs.get(chassis_lower, chassis_lower).title()
-        
-        print(f"[extraire_siege_chassis_parentheses] '{nom_produit}' -> Siège: '{seat_fr}', Châssis: '{chassis_fr}'")
-        return seat_fr, chassis_fr
-    else:
-        # Si le titre ne correspond pas au format "XYZ (ABC)", on renvoie des valeurs vides
-        return ("", "")
+    return ", ".join(dict.fromkeys([mapping_couleurs.get(c.lower(), "Non spécifiée").title() for c in couleurs_brutes]))
 
-############################################
-# Fonction pour créer produits groupés et variables
-############################################
+# 📌 Fonction pour nettoyer le nom du produit en supprimant la couleur
+def nettoyer_nom_produit(nom_produit: str, couleurs: list):
+    if not isinstance(nom_produit, str):
+        return nom_produit
 
-def creer_produits_grouped_et_variables_par_couleur(df):
+    for couleur in couleurs:
+        nom_produit = re.sub(rf"\b{couleur}\b", "", nom_produit, flags=re.IGNORECASE).strip()
+
+    return re.sub(r'\s+', ' ', nom_produit).strip()
+
+# 📌 Fonction pour détecter les produits composites
+def extraire_couleurs_composite(nom_produit: str):
     """
-    Crée un DataFrame final pour WooCommerce.
-    Si le titre correspond au format "Siège (Châssis Frame)", ex: "Peach Pink (Rosegold Frame)",
-    on extrait les deux couleurs distinctes. Sinon, fallback sur la logique existante.
+    Extrait les couleurs liées aux éléments "Châssis" et "Siège".
+    Un produit est considéré composite s'il a **Châssis** et **Siège** dans le même nom.
     """
-    rows = []
-    df["Nom Base"] = df["Name"].apply(nom_sans_couleur)
-    groupes = df.groupby("Nom Base", dropna=False)
+
+    if not isinstance(nom_produit, str):
+        return {}
+
+    # Normalisation du texte (supprimer accents et mettre en minuscule)
+    nom_lower = unicodedata.normalize("NFKD", nom_produit).encode("ASCII", "ignore").decode("utf-8").lower()
+    resultat = {}
+
+    # Définition des éléments à rechercher
+    elements_couleur = {
+        "Châssis": ["châssis", "chassis"],
+        "Siège": ["siège", "siege", "assise"]
+    }
+
+    # Vérification de la présence des deux termes dans le même nom de produit
+    contient_chassis = any(mot in nom_lower for mot in elements_couleur["Châssis"])
+    contient_siege = any(mot in nom_lower for mot in elements_couleur["Siège"])
+
+    if not (contient_chassis and contient_siege):
+        return {}  # Pas un produit composite
+
+    # Définition des adjectifs ignorés
+    adjectifs_ignores = [
+    "light", "pale", "deep", "bright", "medium",
+    "fonce", "foncé", "clair", "pâle", "flashy", "fluorescent",
+    "cozy", "mirage", "sepia", "peach", "magic", "canvas", "navy"
+    "fog", "stormy", "almond", "leaf", "navy","candy", "fog", "almond", "canvas"
     
-    for base_name, group in groupes:
-        print(f"\n>>> Traitement du groupe : '{base_name}' avec {len(group)} ligne(s)")
+    # Ajout des adjectifs liés au Châssis
+    "chrome", "matt", "matté", "brillant", "argenté", "dark", "magic"
+    ]
+
+    # Recherche des couleurs pour chaque élément
+    for nom_element, variantes in elements_couleur.items():
+        for variante in variantes:
+            # Correction du regex pour éviter l'erreur "no such group"
+            regex_patterns = [
+                rf"{variante}\s+(?:({'|'.join(adjectifs_ignores)})\s+)?({'|'.join(couleurs_base)})",
+                rf"({'|'.join(couleurs_base)})\s+{variante}"
+            ]
+            for regex in regex_patterns:
+                match = re.search(regex, nom_lower, re.IGNORECASE)
+                if match:
+                    # Vérification si l'adjectif est capturé
+                    couleur_brute = match.group(2) if match.lastindex == 2 else match.group(1)
+                    couleur_normalisee = mapping_couleurs.get(couleur_brute, couleur_brute).title()
+                    resultat[nom_element] = couleur_normalisee
+                    break  # Sortir dès qu'une couleur est trouvée
+
+    return resultat
+
+  # Renvoie un dictionnaire contenant les couleurs détectées
+def determiner_si_variable(nom_produit: str):
+    """
+    Détermine si un produit est variable en fonction du nombre de couleurs détectées dans son nom.
+    Un produit est variable **s'il contient une seule couleur dans son nom**.
+    """
+    couleurs_detectees = detecter_toutes_couleurs(nom_produit)
+    return len(couleurs_detectees) == 1
+
+# 📌 Fonction pour regrouper les produits **variables** par couleur
+
+
+def regrouper_variations_par_couleur(df):
+    """
+    Regroupe les produits variables en un seul produit parent et crée les produits enfants en variations.
+    """
+    produits_groupes = {}
+    produits_variations = []
+
+    for _, row in df.iterrows():
+        product_name = str(row["Name"])
+        couleurs_detectees = detecter_toutes_couleurs(product_name)
+        product_name_clean = nettoyer_nom_produit(product_name, couleurs_detectees)
         
-        # Vérifions si le premier produit du groupe correspond à un titre du type "XYZ (ABC)"
-        seat_color, chassis_color = extraire_siege_chassis_parentheses(group.iloc[0]["Name"])
-        
-        if seat_color and chassis_color:
-            # On a détecté un format "Siège (Châssis Frame)"
-            print(f"[INFO] Produit format 'Siège (Châssis)' détecté : {base_name}")
-            group = group.copy()
-            group["Seat Color"] = seat_color
-            group["Chassis Color"] = chassis_color
+        key = product_name_clean.lower()  # Clé unique pour le produit parent
+
+        if key not in produits_groupes:
+            # Création du produit parent
+            produit_parent = row.copy()
+            produit_parent["SKU"] = f"PARENT-{row['SKU']}"  # Nouveau SKU parent
+            produit_parent["Name"] = product_name_clean  # Nom sans couleur
+            produit_parent["Type"] = "variable"  # Définir comme produit variable
+            produit_parent["Attribute 1 name"] = "Couleur"
+            produit_parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_detectees)
+            produit_parent["Attribute 1 visible"] = "yes"
+            produit_parent["Attribute 1 global"] = "yes"
             
-            # Créons un parent variable à deux attributs : "Siège" et "Châssis"
-            if len(group) == 1:
-                # Si on n'a qu'une seule ligne, c'est un simple
-                simple = group.iloc[0].copy()
-                simple["Type"] = "simple"
-                simple["Parent"] = ""
-                rows.append(simple)
-                print(f"  -> Produit simple (SKU: {simple.get('SKU', '')})")
-            else:
-                # Parent
-                parent = group.iloc[0].copy()
-                sku_parent = str(parent.get("SKU", ""))
-                parent["Type"] = "variable"
-                parent["Parent"] = ""
-                # On mappe "Siège" sur l'attribut 1, "Châssis" sur l'attribut 2 (ou l'inverse)
-                parent["Attribute 1 name"] = "Siège"
-                parent["Attribute 2 name"] = "Châssis"
-                parent["Attribute 1 value(s)"] = seat_color
-                parent["Attribute 2 value(s)"] = chassis_color
-                parent["Attribute 1 visible"] = "yes"
-                parent["Attribute 2 visible"] = "yes"
-                parent["Attribute 1 variation"] = "yes"
-                parent["Attribute 2 variation"] = "yes"
-                parent["Name"] = base_name
-                parent["Default attribute 1"] = seat_color
-                parent["Default attribute 2"] = chassis_color
-                rows.append(parent)
-                print(f"  -> Produit parent variable créé (SKU: {sku_parent}) avec Siège: {seat_color}, Châssis: {chassis_color}")
-                
-                # Variation 1 : siège
-                variation_seat = parent.copy()
-                variation_seat["SKU"] = f"{sku_parent}-{seat_color.lower().replace(' ','-')}"
-                variation_seat["Type"] = "variation"
-                variation_seat["Parent"] = sku_parent
-                variation_seat["Name"] = f"{base_name} - Siège {seat_color}"
-                rows.append(variation_seat)
-                print(f"     -> Variation créée pour le siège : {variation_seat['SKU']} - {variation_seat['Name']}")
-                
-                # Variation 2 : châssis
-                variation_chassis = parent.copy()
-                variation_chassis["SKU"] = f"{sku_parent}-{chassis_color.lower().replace(' ','-')}"
-                variation_chassis["Type"] = "variation"
-                variation_chassis["Parent"] = sku_parent
-                variation_chassis["Name"] = f"{base_name} - Châssis {chassis_color}"
-                rows.append(variation_chassis)
-                print(f"     -> Variation créée pour le châssis : {variation_chassis['SKU']} - {variation_chassis['Name']}")
-                
-        else:
-            # Sinon, on applique la logique classique (une seule couleur ou pas de parenthèses)
-            if len(group) == 1:
-                simple = group.iloc[0].copy()
-                simple["Type"] = "simple"
-                simple["Parent"] = ""
-                simple["Variations"] = ""
-                rows.append(simple)
-                print(f"  -> Produit simple (SKU: {simple.get('SKU', '')})")
-            else:
-                parent = group.iloc[0].copy()
-                sku_parent = str(parent.get("SKU", ""))
-                set_couleurs = set()
-                color_to_images = defaultdict(list)
-                for _, row_src in group.iterrows():
-                    c_str = row_src.get("Couleurs Normalisées", "")
-                    row_images = row_src.get("Images", "")
-                    print(f"[DEBUG] Ligne SKU='{row_src.get('SKU','')}' => Couleurs Normalisées: '{c_str}'")
-                    print(f"[DEBUG] Ligne SKU='{row_src.get('SKU','')}' => Images: '{row_images}'")
-                    if c_str:
-                        couleurs_de_ligne = [couleur.strip() for couleur in c_str.split(",") if couleur.strip()]
-                        for coul in couleurs_de_ligne:
-                            set_couleurs.add(coul)
-                            if isinstance(row_images, str) and row_images.strip():
-                                color_to_images[coul].append(row_images)
-                if not set_couleurs:
-                    print(f"⚠️ Aucune couleur détectée pour '{base_name}', traité comme produit simple.")
-                    for _, row_src in group.iterrows():
-                        simple = row_src.copy()
-                        simple["Type"] = "simple"
-                        simple["Parent"] = ""
-                        simple["Variations"] = ""
-                        rows.append(simple)
-                else:
-                    parent["Type"] = "variable"
-                    parent["Parent"] = ""
-                    parent["Attribute 1 name"] = "Couleur"
-                    parent["Attribute 1 value(s)"] = ", ".join(sorted(set_couleurs))
-                    parent["Attribute 1 visible"] = "yes"
-                    parent["Attribute 1 variation"] = "yes"
-                    parent["Attribute 1 global"] = "yes"
-                    parent["Variations"] = ", ".join(sorted(set_couleurs))
-                    parent["Name"] = base_name
-                    default_color = sorted(set_couleurs)[0]
-                    parent["Default attribute 1"] = default_color
-                    rows.append(parent)
-                    print(f"  -> Produit parent variable créé (SKU: {sku_parent}) avec couleurs : {', '.join(sorted(set_couleurs))}")
-                    print(f"     Couleur par défaut définie : {default_color}")
-                    
-                    images_parent = parent.get("Images", "").strip() if parent.get("Images", "") else ""
-                    if images_parent:
-                        print(f"     -> Galerie du parent (SKU: {sku_parent}): {images_parent}")
-                    else:
-                        print(f"     -> Aucune image définie pour le parent (SKU: {sku_parent}).")
-                    
-                    for coul in sorted(set_couleurs):
-                        variation = parent.copy()
-                        variation["SKU"] = f"{sku_parent}-{coul.lower().replace(' ','-')}"
-                        variation["Type"] = "variation"
-                        variation["Parent"] = sku_parent
-                        variation["Attribute 1 name"] = "Couleur"
-                        variation["Attribute 1 value(s)"] = coul
-                        variation["Attribute 1 visible"] = "yes"
-                        variation["Attribute 1 variation"] = "yes"
-                        variation["Attribute 1 global"] = "yes"
-                        variation["Variations"] = ""
-                        variation["Description"] = ""
-                        variation["Short description"] = ""
-                        if "Nom Base" in variation:
-                            variation["Name"] = f"{variation['Nom Base']} - {coul}"
-                        else:
-                            variation["Name"] = f"{parent['Name']} - {coul}"
-                        
-                        liste_images_couleur = []
-                        if coul in color_to_images:
-                            for bloc_img in color_to_images[coul]:
-                                for url_img in bloc_img.split(","):
-                                    url_img = url_img.strip()
-                                    if url_img:
-                                        liste_images_couleur.append(url_img)
-                                        print(f"[DEBUG] Couleur '{coul}' => url_img: {url_img}")
-                        print(f"[DEBUG] Couleur '{coul}' => liste_images_couleur avant suppression doublons: {liste_images_couleur}")
-                        liste_images_couleur = list(dict.fromkeys(liste_images_couleur))
-                        print(f"[DEBUG] Couleur '{coul}' => liste_images_couleur après suppression doublons: {liste_images_couleur}")
-                        
-                        if len(liste_images_couleur) == 0:
-                            variation["Images"] = images_parent
-                            print(f"[DEBUG] Couleur '{coul}' => Aucune image spécifique trouvée, fallback sur parent: {images_parent}")
-                        else:
-                            variation["Images"] = ", ".join(liste_images_couleur)
-                            print(f"[DEBUG] Couleur '{coul}' => Images variation: {variation['Images']}")
-                        
-                        if "Code EAN" in variation:
-                            variation["Code EAN"] = ""
-                        
-                        rows.append(variation)
-                        print(f"  -> Variation créée pour '{base_name}' : Couleur = {coul}, SKU = {variation['SKU']}, Name = {variation['Name']}")
-                        print(f"     Images de la variation : {variation['Images']}")
-    
-    df_res = pd.DataFrame(rows)
-    return df_res
+            # Supprimer les colonnes spécifiques aux variations si nécessaire
+            for col in ["Parent SKU"]:
+                if col in produit_parent:
+                    del produit_parent[col]
 
-############################################
-# Fonction principale
-############################################
+            produits_groupes[key] = produit_parent
+
+        # Création du produit enfant (variation)
+        produit_enfant = row.copy()
+        produit_enfant["Parent SKU"] = produits_groupes[key]["SKU"]  # Associe le SKU parent
+        produit_enfant["Type"] = "variation"
+        produit_enfant["Attribute 1 name"] = "Couleur"
+        produit_enfant["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_detectees)
+        produit_enfant["Attribute 1 visible"] = "yes"
+        produit_enfant["Attribute 1 global"] = "yes"
+
+        produits_variations.append(produit_enfant)
+
+    # Fusion des parents et des variations avec pd.concat()
+    df_final = pd.concat([pd.DataFrame(list(produits_groupes.values())), pd.DataFrame(produits_variations)], ignore_index=True)
+
+    return df_final
+
+
 
 def main():
     root = Tk()
     root.withdraw()
     
+    # 📂 Sélection du fichier CSV
     chemin_fichier = filedialog.askopenfilename(
         filetypes=[("CSV Files", "*.csv")],
         title="Sélectionnez le fichier CSV"
     )
     if not chemin_fichier:
-        print("Aucun fichier sélectionné. Fermeture du script.")
+        print("❌ Aucun fichier sélectionné. Fermeture du script.")
         return
-
+    
     try:
-        df = pd.read_csv(chemin_fichier)
-        print(f"📂 Fichier chargé avec succès : {os.path.basename(chemin_fichier)}")
-        
-        # Étapes de transformation
-        df_modifie = renommer_colonnes_pour_woocommerce(df)
-        df_modifie = supprimer_doublons_colonnes(df_modifie)
-        df_modifie = ajuster_categories(df_modifie)
-        df_modifie = formatter_images(df_modifie)
-        
-        # Optionnel : formater_produits si nécessaire
-        # df_modifie = formater_produits(df_modifie)
-        
-        if "Name" in df_modifie.columns:
-            df_modifie["Liste Couleurs Brutes"] = df_modifie["Name"].apply(detecter_toutes_couleurs)
-            # Détection classique de la dernière couleur, stockée dans Couleurs Normalisées
-            df_modifie["Liste Couleurs Brutes"] = df_modifie["Name"].apply(detecter_toutes_couleurs)
-            df_modifie["Couleurs Normalisées"] = df_modifie["Liste Couleurs Brutes"].apply(normaliser_liste_couleurs)
-            df_modifie["Attribute 1 name"] = "Couleur"
-            df_modifie["Attribute 1 value(s)"] = df_modifie["Couleurs Normalisées"]
-            df_modifie["Attribute 1 visible"] = 1
-            df_modifie["Attribute 1 global"] = 1
-            print("✅ Couleurs détectées et colonnes d'attributs remplies.")
-        else:
-            print("⚠️ La colonne 'Name' n'existe pas, impossible de détecter la couleur !")
-        
-        # Création du DataFrame final
-        df_final = creer_produits_grouped_et_variables_par_couleur(df_modifie)
-        print("✅ Structure produit (variables/groupés) créée.")
-        
-        # Export
+        # 📂 Chargement du fichier avec encodage UTF-8
+        df = pd.read_csv(chemin_fichier, encoding="utf-8-sig", dtype=str)
+        print(f"📂 Fichier chargé : {os.path.basename(chemin_fichier)}")
+
+        # 🛠️ Nettoyage des colonnes
+        df.columns = df.columns.str.strip()
+
+        # 🚀 Vérification des colonnes
+        print("🔍 Colonnes détectées :", df.columns.tolist())
+
+        # 🛠️ Renommer les colonnes pour WooCommerce
+        df = renommer_colonnes_pour_woocommerce(df)
+        print("✅ Colonnes après renommage :", df.columns.tolist())
+
+        # 🚨 Vérifier si "Name" est bien présent
+        if "Name" not in df.columns:
+            raise KeyError(f"❌ La colonne 'Name' est absente après transformation ! Colonnes actuelles : {df.columns.tolist()}")
+
+        # 🛠️ Suppression des doublons
+        df = supprimer_doublons_colonnes(df)
+        print("✅ Colonnes après suppression des doublons :", df.columns.tolist())
+
+        # 🛠️ Ajustement des catégories
+        df = ajuster_categories(df)
+
+        # 🖼️ Formatage des images
+        df = formatter_images(df)
+
+        # 🚀 Détection des **produits composites**
+        df["Composants composites (encodés en JSON)"] = df["Name"].apply(extraire_couleurs_composite)
+        df["Type"] = df["Composants composites (encodés en JSON)"].apply(
+            lambda x: "composite" if len(x) > 0 else "variable"
+        )
+
+        # ✅ Séparer les produits **composites** des **variables**
+        df_composites = df[df["Type"] == "composite"]
+        df_variables = df[df["Type"] == "variable"]
+
+        print(f"🛠️ Produits composites détectés : {len(df_composites)}")
+        print(f"🛠️ Produits variables détectés : {len(df_variables)}")
+
+        # ✅ Détection des produits avec **une seule couleur** pour être variables
+        df_variables["Is_Variable"] = df_variables["Name"].apply(determiner_si_variable)
+
+        # ✅ Séparer les **véritables** produits variables
+        df_variables_reels = df_variables[df_variables["Is_Variable"]]
+
+        print(f"✅ Produits variables réellement éligibles : {len(df_variables_reels)}")
+
+        # 🛠️ Regroupement des **produits variables** par couleur
+        df_variables_regroupes = regrouper_variations_par_couleur(df_variables_reels)
+        print(f"✅ Nombre de produits regroupés : {len(df_variables_regroupes)}")
+
+        # 🔗 Fusion des produits **variables regroupés** et **composites**
+        df_final = pd.concat([df_composites, df_variables_regroupes], ignore_index=True)
+
+        # 💾 Export du fichier final
         nouveau_chemin = os.path.splitext(chemin_fichier)[0] + "_final.csv"
         df_final.to_csv(nouveau_chemin, index=False, sep=",", encoding="utf-8-sig")
-        print(f"✅ Fichier final exporté avec succès : {nouveau_chemin}")
-    
+        print(f"✅ Fichier final exporté avec toutes les données : {nouveau_chemin}")
+
     except Exception as e:
-        print(f"❌ Une erreur est survenue : {e}")
+        print(f"❌ Erreur pendant le traitement : {e}")
 
 if __name__ == "__main__":
     main()
+
