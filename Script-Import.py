@@ -6,7 +6,9 @@ import re
 import json
 import unicodedata
 from collections import defaultdict
-from rapidfuzz import process, fuzz  # Si nécessaire
+from rapidfuzz import process, fuzz  # Si nécessaireimport csv
+import csv
+import MySQLdb
 
 
 # Définitions globales pour la détection des couleurs
@@ -237,10 +239,14 @@ def normaliser_liste_couleurs(couleurs_brutes: list):
 def nettoyer_nom_produit(nom_produit: str, couleurs: list):
     if not isinstance(nom_produit, str):
         return nom_produit
-
+    # On retire d'abord les couleurs (s'il y en a) en tant que mots entiers
     for couleur in couleurs:
-        nom_produit = re.sub(rf"\b{couleur}\b", "", nom_produit, flags=re.IGNORECASE).strip()
-
+        nom_produit = re.sub(rf"\b{couleur}\b", "", nom_produit, flags=re.IGNORECASE)
+    # Puis, si le nom contient " - ", on prend uniquement la partie avant
+    if " - " in nom_produit:
+        nom_produit = nom_produit.split(" - ")[0]
+    # Enfin, on nettoie les espaces superflus et d'éventuels tirets en fin de chaîne
+    nom_produit = re.sub(r'[-\s]+$', '', nom_produit)
     return re.sub(r'\s+', ' ', nom_produit).strip()
 
 # 📌 Fonction pour détecter les produits composites
@@ -314,50 +320,90 @@ def determiner_si_variable(nom_produit: str):
 
 def regrouper_variations_par_couleur(df):
     """
-    Regroupe les produits variables en un seul produit parent et crée les produits enfants en variations.
+    Regroupe les produits par modèle (basé sur le nom nettoyé sans couleur).
+
+    - Si le groupe ne présente qu'une seule couleur, le produit est importé comme produit simple.
+    - Sinon, on génère :
+        • Un produit parent (Type = "variable") créé à partir du premier produit du groupe.
+          Son SKU est modifié en ajoutant le préfixe "PARENT-".
+          Son nom est nettoyé (les couleurs et séparateurs superflus sont retirés).
+          Son "Attribute 1 value(s)" contient l'union de toutes les couleurs du groupe.
+          Le champ "Code EAN" est vidé et "Parent SKU" est vide.
+        • Une ligne variation pour chaque produit du groupe (même celui utilisé pour le parent).
+          Chaque variation conserve son nom complet (avec la couleur) et renseigne "Parent SKU" avec le SKU du parent.
+          Pour la variation issue du produit utilisé pour le parent (qui aurait le même SKU d'origine),
+          on modifie son SKU (par exemple en ajoutant un suffixe basé sur la couleur) pour garantir l'unicité.
     """
-    produits_groupes = {}
-    produits_variations = []
-
+    # 1) Regrouper par nom nettoyé (sans couleur)
+    groupes = {}
     for _, row in df.iterrows():
-        product_name = str(row["Name"])
-        couleurs_detectees = detecter_toutes_couleurs(product_name)
-        product_name_clean = nettoyer_nom_produit(product_name, couleurs_detectees)
+        nom_original = str(row["Name"])
+        couleurs_detectees = detecter_toutes_couleurs(nom_original)
+        nom_sans_couleur = nettoyer_nom_produit(nom_original, couleurs_detectees).strip()
+        key = nom_sans_couleur.lower()
+        groupes.setdefault(key, []).append(row)
+    
+    liste_resultats = []
+
+    # 2) Traiter chaque groupe
+    for key, rows in groupes.items():
+        # a) Agréger toutes les couleurs du groupe
+        couleurs_group = set()
+        for row in rows:
+            couleurs = detecter_toutes_couleurs(str(row["Name"]))
+            couleurs_group.update(couleurs)
+        couleurs_group_list = list(couleurs_group)
         
-        key = product_name_clean.lower()  # Clé unique pour le produit parent
-
-        if key not in produits_groupes:
-            # Création du produit parent
-            produit_parent = row.copy()
-            produit_parent["SKU"] = f"PARENT-{row['SKU']}"  # Nouveau SKU parent
-            produit_parent["Name"] = product_name_clean  # Nom sans couleur
-            produit_parent["Type"] = "variable"  # Définir comme produit variable
-            produit_parent["Attribute 1 name"] = "Couleur"
-            produit_parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_detectees)
-            produit_parent["Attribute 1 visible"] = "yes"
-            produit_parent["Attribute 1 global"] = "yes"
+        # Si le groupe ne présente qu'une seule couleur, importer comme produit simple
+        if len(couleurs_group_list) == 1:
+            simple_product = rows[0].copy()
+            simple_product["Type"] = "simple"
+            simple_product["Attribute 1 name"] = "Couleur"
+            simple_product["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
+            simple_product["Attribute 1 visible"] = "yes"
+            simple_product["Attribute 1 global"] = "yes"
+            simple_product["Parent SKU"] = ""
+            # On ne modifie pas le SKU ni le Code EAN pour un produit simple (ou on peut vider l'EAN si souhaité)
+            liste_resultats.append(simple_product)
+        else:
+            # b) Sinon, créer un produit parent et des variations
+            # Création du parent à partir du premier produit du groupe
+            parent = rows[0].copy()
+            sku_orig = str(parent["SKU"])
+            parent["SKU"] = "PARENT-" + sku_orig  # modification du SKU du parent
+            # Nettoyer le nom du parent pour retirer la couleur
+            parent["Name"] = nettoyer_nom_produit(parent["Name"], detecter_toutes_couleurs(parent["Name"])).strip()
+            parent["Type"] = "variable"
+            parent["Attribute 1 name"] = "Couleur"
+            parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
+            parent["Attribute 1 visible"] = "yes"
+            parent["Attribute 1 global"] = "yes"
+            # Vider le Code EAN pour le parent
+            parent["Code EAN"] = ""
+            parent["Parent SKU"] = ""
+            liste_resultats.append(parent)
             
-            # Supprimer les colonnes spécifiques aux variations si nécessaire
-            for col in ["Parent SKU"]:
-                if col in produit_parent:
-                    del produit_parent[col]
-
-            produits_groupes[key] = produit_parent
-
-        # Création du produit enfant (variation)
-        produit_enfant = row.copy()
-        produit_enfant["Parent SKU"] = produits_groupes[key]["SKU"]  # Associe le SKU parent
-        produit_enfant["Type"] = "variation"
-        produit_enfant["Attribute 1 name"] = "Couleur"
-        produit_enfant["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_detectees)
-        produit_enfant["Attribute 1 visible"] = "yes"
-        produit_enfant["Attribute 1 global"] = "yes"
-
-        produits_variations.append(produit_enfant)
-
-    # Fusion des parents et des variations avec pd.concat()
-    df_final = pd.concat([pd.DataFrame(list(produits_groupes.values())), pd.DataFrame(produits_variations)], ignore_index=True)
-
+            # Créer une variation pour chaque produit du groupe (y compris le premier)
+            for row in rows:
+                variation = row.copy()
+                variation["Type"] = "variation"
+                variation["Parent SKU"] = parent["SKU"]
+                var_couleurs = detecter_toutes_couleurs(str(variation["Name"]))
+                variation["Attribute 1 name"] = "Couleur"
+                variation["Attribute 1 value(s)"] = normaliser_liste_couleurs(var_couleurs)
+                variation["Attribute 1 visible"] = "yes"
+                variation["Attribute 1 global"] = "yes"
+                # Si la variation provient du produit utilisé pour le parent (SKU identique à l'original),
+                # modifier son SKU pour garantir l'unicité.
+                if str(variation["SKU"]) == sku_orig:
+                    if var_couleurs:
+                        suffix = var_couleurs[0][:2].upper()  # par exemple "GR" pour "gris"
+                    else:
+                        suffix = "XX"
+                    variation["SKU"] = sku_orig + suffix
+                liste_resultats.append(variation)
+    
+    df_final = pd.DataFrame(liste_resultats)
     return df_final
 
 
