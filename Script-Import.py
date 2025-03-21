@@ -4,6 +4,7 @@ from tkinter import Tk, filedialog
 import os
 import re
 import json
+import requests
 import unicodedata
 from collections import defaultdict
 from rapidfuzz import process, fuzz  # Si nécessaireimport csv
@@ -183,7 +184,9 @@ def ajuster_categories(df):
     return df
 
 def formatter_images(df):
-    base_url = "http://yolobaby.online/wp-content/uploads/image-site/"
+    # URL complète avec HTTPS, correspond exactement au format attendu par l'API PHP
+    base_url = "https://yolobaby.online/wp-content/uploads/image-site/"
+    
     colonnes_images = [
         "Image principale",
         "Image supplémentaire n°1",
@@ -196,25 +199,48 @@ def formatter_images(df):
         "Image supplémentaire n°8",
         "Image supplémentaire n°9"
     ]
-    colonnes_existantes = [col for col in colonnes_images if col in df.columns]
-    if not colonnes_existantes:
-        print("⚠️ Aucune colonne d'image trouvée, la colonne 'Images' ne sera pas créée.")
-        return df
     
+    colonnes_existantes = [col for col in colonnes_images if col in df.columns]
+
+    if not colonnes_existantes:
+        print("⚠️ Aucune colonne d'image trouvée.")
+        return df
+
+    # Fusion des URLs d'images
     df['Images'] = df[colonnes_existantes].apply(
         lambda row: ", ".join([base_url + img.strip() for img in row.dropna().astype(str)]),
         axis=1
     )
-    print("🔍 Vérification des images fusionnées avec URLs complètes :")
-    print(df[['SKU', 'Images']].head())
-    
-    if df['Images'].isnull().all():
-        print("⚠️ Aucune image fusionnée, les colonnes originales ne seront pas supprimées.")
-    else:
-        print("✅ Fusion des images réussie avec URLs, suppression des colonnes d'origine.")
-        df.drop(columns=colonnes_existantes, inplace=True, errors='ignore')
-    
+
+    # Générer la méta WooCommerce via l'API
+    def generer_meta_images(row):
+        urls_images_sup = [base_url + row[col].strip() for col in colonnes_existantes[1:] if pd.notnull(row[col])]
+        if urls_images_sup:
+            ids_images = recuperer_id_images_wp_via_api(urls_images_sup)
+            return ','.join(ids_images)
+        return ""
+
+    df['_wc_additional_variation_images'] = df.apply(generer_meta_images, axis=1)
+
+    df.drop(columns=colonnes_existantes, inplace=True, errors='ignore')
+
     return df
+
+def recuperer_id_images_wp_via_api(liste_urls):
+    api_url = "https://yolobaby.online/api-images.php"
+    try:
+        response = requests.post(api_url, json={
+            'urls': liste_urls,
+            'api_key': '12345'
+        })
+        response.raise_for_status()
+        resultat = response.json()
+        ids = [str(resultat[url]) for url in liste_urls if url in resultat]
+        return ids
+    except requests.RequestException as e:
+        print(f"Erreur API : {e}")
+        print(f"Réponse reçue : {response.text}")
+        return []
 
 ############################################
 # Fonctions de détection/extraction des couleurs
