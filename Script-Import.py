@@ -5,6 +5,7 @@ import os
 import re
 import json
 import requests
+from time import sleep
 import unicodedata
 from collections import defaultdict
 from rapidfuzz import process, fuzz  # Si nécessaireimport csv
@@ -183,9 +184,8 @@ def ajuster_categories(df):
     df.drop(columns=colonnes_existantes + ['Catégorie principale du produit'], inplace=True, errors='ignore')
     return df
 
-def formatter_images(df):
-    # URL complète avec HTTPS, correspond exactement au format attendu par l'API PHP
-    base_url = "https://yolobaby.online/wp-content/uploads/image-site/"
+def formatter_images(df, taille_lot=100):
+    base_url = "https://dev.yolobaby.online/wp-content/uploads/image-site/"
     
     colonnes_images = [
         "Image principale",
@@ -206,42 +206,65 @@ def formatter_images(df):
         print("⚠️ Aucune colonne d'image trouvée.")
         return df
 
-    # Fusion des URLs d'images
-    df['Images'] = df[colonnes_existantes].apply(
-        lambda row: ", ".join([base_url + img.strip() for img in row.dropna().astype(str)]),
-        axis=1
+    # Fusion des URLs complètes dans une nouvelle colonne temporaire
+    df["all_image_urls"] = df[colonnes_existantes].apply(
+        lambda row: [base_url + img.strip() for img in row.dropna().astype(str)], axis=1
     )
 
-    # Générer la méta WooCommerce via l'API
-    def generer_meta_images(row):
-        urls_images_sup = [base_url + row[col].strip() for col in colonnes_existantes[1:] if pd.notnull(row[col])]
-        if urls_images_sup:
-            ids_images = recuperer_id_images_wp_via_api(urls_images_sup)
-            return ','.join(ids_images)
-        return ""
+    # Génération directe de la colonne "Images"
+    df["Images"] = df["all_image_urls"].apply(lambda urls: ", ".join(urls))
 
-    df['_wc_additional_variation_images'] = df.apply(generer_meta_images, axis=1)
+    # --- 👇 Partie désactivée : récupération des IDs depuis l’API + images supplémentaires ---
 
-    df.drop(columns=colonnes_existantes, inplace=True, errors='ignore')
+    # Créer une liste unique de toutes les URLs pour minimiser les appels API
+    # toutes_urls = list(set(url for sublist in df["all_image_urls"] for url in sublist))
+
+    # Récupérer les IDs en batch depuis l'API
+    # url_to_id = recuperer_id_images_wp_via_api_batch(toutes_urls, taille_lot)
+
+    # Associer les IDs récupérés aux URLs dans le DataFrame
+    # def generer_meta(row):
+    #     urls_sup = row["all_image_urls"][1:]  # images supplémentaires uniquement
+    #     ids_sup = [str(url_to_id[url]) for url in urls_sup if url in url_to_id]
+    #     return ",".join(ids_sup)
+
+    # df["_wc_additional_variation_images"] = df.apply(generer_meta, axis=1)
+
+    # --- ☝️ Fin de la partie désactivée ---
+
+    # Nettoyage
+    df.drop(
+        columns=colonnes_existantes + ["all_image_urls"], inplace=True, errors="ignore"
+    )
 
     return df
 
-def recuperer_id_images_wp_via_api(liste_urls):
-    api_url = "https://yolobaby.online/api-images.php"
-    try:
-        response = requests.post(api_url, json={
-            'urls': liste_urls,
-            'api_key': '12345'
-        })
-        response.raise_for_status()
-        resultat = response.json()
-        ids = [str(resultat[url]) for url in liste_urls if url in resultat]
-        return ids
-    except requests.RequestException as e:
-        print(f"Erreur API : {e}")
-        print(f"Réponse reçue : {response.text}")
-        return []
 
+# --- 👇 Fonction API désactivée mais conservée si besoin futur ---
+# def recuperer_id_images_wp_via_api_batch(urls, taille_lot=100):
+#     api_url = "https://dev.yolobaby.online/api-images.php"
+#     url_to_id = {}
+
+#     for i in range(0, len(urls), taille_lot):
+#         lot_urls = urls[i : i + taille_lot]
+#         try:
+#             response = requests.post(
+#                 api_url, json={"urls": lot_urls, "api_key": "12345"}
+#             )
+#             response.raise_for_status()
+#             resultat = response.json()
+#             url_to_id.update(resultat)
+#             print(
+#                 f"✅ Lot {i // taille_lot + 1}/{(len(urls) - 1) // taille_lot + 1} traité avec succès."
+#             )
+#         except requests.RequestException as e:
+#             print(f"❌ Erreur API sur le lot {i // taille_lot + 1}: {e}")
+#             print(f"Réponse reçue : {response.text}")
+#             sleep(1)  # Pause en cas d'erreur pour éviter surcharge API
+
+#     return url_to_id
+
+#
 ############################################
 # Fonctions de détection/extraction des couleurs
 ############################################
@@ -333,13 +356,22 @@ def extraire_couleurs_composite(nom_produit: str):
     return resultat
 
   # Renvoie un dictionnaire contenant les couleurs détectées
-def determiner_si_variable(nom_produit: str):
+def determiner_si_variable(nom_produit: str, option_taille: str = ""):
     """
-    Détermine si un produit est variable en fonction du nombre de couleurs détectées dans son nom.
-    Un produit est variable **s'il contient une seule couleur dans son nom**.
+    Un produit est variable s’il :
+    - contient exactement une couleur détectée dans son nom
+    - ou s’il a une taille détectée via un pattern intelligent
     """
     couleurs_detectees = detecter_toutes_couleurs(nom_produit)
-    return len(couleurs_detectees) == 1
+
+    # Sécurisation max ici 👇
+    taille = str(option_taille).strip().lower() if pd.notnull(option_taille) else ""
+
+    contient_taille = bool(re.search(r"(mois|ans|m|t)", taille)) and len(taille) <= 10
+
+    return len(couleurs_detectees) == 1 or contient_taille
+
+
 
 # 📌 Fonction pour regrouper les produits **variables** par couleur
 
@@ -348,17 +380,8 @@ def regrouper_variations_par_couleur(df):
     """
     Regroupe les produits par modèle (basé sur le nom nettoyé sans couleur).
 
-    - Si le groupe ne présente qu'une seule couleur, le produit est importé comme produit simple.
-    - Sinon, on génère :
-        • Un produit parent (Type = "variable") créé à partir du premier produit du groupe.
-          Son SKU est modifié en ajoutant le préfixe "PARENT-".
-          Son nom est nettoyé (les couleurs et séparateurs superflus sont retirés).
-          Son "Attribute 1 value(s)" contient l'union de toutes les couleurs du groupe.
-          Le champ "Code EAN" est vidé et "Parent SKU" est vide.
-        • Une ligne variation pour chaque produit du groupe (même celui utilisé pour le parent).
-          Chaque variation conserve son nom complet (avec la couleur) et renseigne "Parent SKU" avec le SKU du parent.
-          Pour la variation issue du produit utilisé pour le parent (qui aurait le même SKU d'origine),
-          on modifie son SKU (par exemple en ajoutant un suffixe basé sur la couleur) pour garantir l'unicité.
+    - Même s’il n’y a qu’un seul produit avec une couleur, on le traite comme un produit variable
+      avec une seule variation.
     """
     # 1) Regrouper par nom nettoyé (sans couleur)
     groupes = {}
@@ -373,71 +396,139 @@ def regrouper_variations_par_couleur(df):
 
     # 2) Traiter chaque groupe
     for key, rows in groupes.items():
-        # a) Agréger toutes les couleurs du groupe
         couleurs_group = set()
         for row in rows:
             couleurs = detecter_toutes_couleurs(str(row["Name"]))
             couleurs_group.update(couleurs)
         couleurs_group_list = list(couleurs_group)
-        
-        # Si le groupe ne présente qu'une seule couleur, importer comme produit simple
-        if len(couleurs_group_list) == 1:
-            simple_product = rows[0].copy()
-            simple_product["Type"] = "simple"
-            simple_product["Attribute 1 name"] = "Couleur"
-            simple_product["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
-            simple_product["Attribute 1 visible"] = "yes"
-            simple_product["Attribute 1 global"] = "yes"
-            simple_product["Parent SKU"] = ""
-            # On ne modifie pas le SKU ni le Code EAN pour un produit simple (ou on peut vider l'EAN si souhaité)
-            liste_resultats.append(simple_product)
-        else:
-            # b) Sinon, créer un produit parent et des variations
-            # Création du parent à partir du premier produit du groupe
-            parent = rows[0].copy()
-            sku_orig = str(parent["SKU"])
-            parent["SKU"] = "PARENT-" + sku_orig  # modification du SKU du parent
-            # Nettoyer le nom du parent pour retirer la couleur
-            parent["Name"] = nettoyer_nom_produit(parent["Name"], detecter_toutes_couleurs(parent["Name"])).strip()
+
+        # ✅ Cas 1 : groupe avec un seul produit mais une couleur détectée → variable avec 1 variation
+        if len(rows) == 1 and len(couleurs_group_list) == 1:
+            row = rows[0]
+            parent = row.copy()
+            variation = row.copy()
+
+            sku_orig = str(row["SKU"])
+            parent["SKU"] = "PARENT-" + sku_orig
+            parent["Name"] = nettoyer_nom_produit(row["Name"], couleurs_group_list).strip()
             parent["Type"] = "variable"
             parent["Attribute 1 name"] = "Couleur"
-            parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
+            parent["Attribute 1 value(s"] = normaliser_liste_couleurs(couleurs_group_list)
             parent["Attribute 1 visible"] = "yes"
             parent["Attribute 1 global"] = "yes"
-            # Vider le Code EAN pour le parent
             parent["Code EAN"] = ""
             parent["Parent SKU"] = ""
             liste_resultats.append(parent)
-            
-            # Créer une variation pour chaque produit du groupe (y compris le premier)
+
+            variation["Type"] = "variation"
+            variation["Parent SKU"] = parent["SKU"]
+            variation["Attribute 1 name"] = "Couleur"
+            variation["Attribute 1 value(s"] = normaliser_liste_couleurs(couleurs_group_list)
+            variation["Attribute 1 visible"] = "yes"
+            variation["Attribute 1 global"] = "yes"
+            variation["SKU"] = sku_orig + "-V1"  # suffixe pour unicité
+            liste_resultats.append(variation)
+
+        # ✅ Cas 2 : plusieurs produits → produit variable avec variations multiples
+        elif len(rows) > 1:
+            parent = rows[0].copy()
+            sku_orig = str(parent["SKU"])
+            parent["SKU"] = "PARENT-" + sku_orig
+            parent["Name"] = nettoyer_nom_produit(parent["Name"], detecter_toutes_couleurs(parent["Name"])).strip()
+            parent["Type"] = "variable"
+            parent["Attribute 1 name"] = "Couleur"
+            parent["Attribute 1 value(s"] = normaliser_liste_couleurs(couleurs_group_list)
+            parent["Attribute 1 visible"] = "yes"
+            parent["Attribute 1 global"] = "yes"
+            parent["Code EAN"] = ""
+            parent["Parent SKU"] = ""
+            liste_resultats.append(parent)
+
             for row in rows:
                 variation = row.copy()
                 variation["Type"] = "variation"
                 variation["Parent SKU"] = parent["SKU"]
                 var_couleurs = detecter_toutes_couleurs(str(variation["Name"]))
                 variation["Attribute 1 name"] = "Couleur"
-                variation["Attribute 1 value(s)"] = normaliser_liste_couleurs(var_couleurs)
+                variation["Attribute 1 value(s"] = normaliser_liste_couleurs(var_couleurs)
                 variation["Attribute 1 visible"] = "yes"
                 variation["Attribute 1 global"] = "yes"
-                # Si la variation provient du produit utilisé pour le parent (SKU identique à l'original),
-                # modifier son SKU pour garantir l'unicité.
                 if str(variation["SKU"]) == sku_orig:
-                    if var_couleurs:
-                        suffix = var_couleurs[0][:2].upper()  # par exemple "GR" pour "gris"
-                    else:
-                        suffix = "XX"
+                    suffix = var_couleurs[0][:2].upper() if var_couleurs else "XX"
                     variation["SKU"] = sku_orig + suffix
                 liste_resultats.append(variation)
-    
+
+        # ❌ Cas inattendu (aucune couleur trouvée ou vide)
+        else:
+            print(f"ℹ️ Groupe ignoré (pas de couleur détectée) : {key}")
+
     df_final = pd.DataFrame(liste_resultats)
     return df_final
 
+
+def regrouper_variations_par_taille(df):
+    """
+    Regroupe les produits variables par taille.
+    """
+    groupes = {}
+
+    for _, row in df.iterrows():
+        nom_original = str(row["Name"])
+        taille_raw = row.get("Attribute 2 value(s)", "")
+        taille = str(taille_raw).strip() if pd.notnull(taille_raw) else ""
+        nom_base = re.sub(rf"\b{re.escape(taille)}\b", "", nom_original, flags=re.IGNORECASE).strip()
+        groupes.setdefault(nom_base.lower(), []).append(row)
+
+    liste_resultats = []
+
+    for ref, rows in groupes.items():
+        tailles_group = set()
+        for row in rows:
+            taille_raw = row.get("Attribute 2 value(s)", "")
+            taille = str(taille_raw).strip() if pd.notnull(taille_raw) else ""
+            if taille:
+                tailles_group.add(taille)
+        tailles_group_list = sorted(list(tailles_group))
+
+        parent = rows[0].copy()
+        sku_orig = str(parent["SKU"]).strip()
+        parent["SKU"] = "PARENT-" + sku_orig
+        parent["Type"] = "variable"
+        parent["Attribute 2 name"] = "Taille"
+        parent["Attribute 2 value(s)"] = ", ".join(tailles_group_list)
+        parent["Attribute 2 visible"] = "yes"
+        parent["Attribute 2 global"] = "yes"
+        parent["Parent SKU"] = ""
+        if "EAN" in parent:
+            parent["EAN"] = ""
+        elif "Code EAN" in parent:
+            parent["Code EAN"] = ""
+        liste_resultats.append(parent)
+
+        for row in rows:
+            variation = row.copy()
+            variation["Type"] = "variation"
+            variation["Parent SKU"] = parent["SKU"]
+            variation["Attribute 2 name"] = "Taille"
+            taille_raw = variation.get("Attribute 2 value(s)", "")
+            taille = str(taille_raw).strip() if pd.notnull(taille_raw) else ""
+            variation["Attribute 2 value(s)"] = taille
+            variation["Attribute 2 visible"] = "yes"
+            variation["Attribute 2 global"] = "yes"
+
+            if str(variation["SKU"]).strip() == sku_orig:
+                suffix = taille[:2].upper() if taille else "XX"
+                variation["SKU"] = sku_orig + suffix
+
+            liste_resultats.append(variation)
+
+    return pd.DataFrame(liste_resultats)
 
 
 def main():
     root = Tk()
     root.withdraw()
-    
+
     # 📂 Sélection du fichier CSV
     chemin_fichier = filedialog.askopenfilename(
         filetypes=[("CSV Files", "*.csv")],
@@ -446,65 +537,89 @@ def main():
     if not chemin_fichier:
         print("❌ Aucun fichier sélectionné. Fermeture du script.")
         return
-    
+
     try:
-        # 📂 Chargement du fichier avec encodage UTF-8
+        # Chargement du fichier avec encodage UTF-8
         df = pd.read_csv(chemin_fichier, encoding="utf-8-sig", dtype=str)
         print(f"📂 Fichier chargé : {os.path.basename(chemin_fichier)}")
 
-        # 🛠️ Nettoyage des colonnes
         df.columns = df.columns.str.strip()
-
-        # 🚀 Vérification des colonnes
         print("🔍 Colonnes détectées :", df.columns.tolist())
 
-        # 🛠️ Renommer les colonnes pour WooCommerce
         df = renommer_colonnes_pour_woocommerce(df)
         print("✅ Colonnes après renommage :", df.columns.tolist())
 
-        # 🚨 Vérifier si "Name" est bien présent
         if "Name" not in df.columns:
             raise KeyError(f"❌ La colonne 'Name' est absente après transformation ! Colonnes actuelles : {df.columns.tolist()}")
 
-        # 🛠️ Suppression des doublons
+        # S'assurer que la colonne "Attribute 2 value(s)" existe
+        if "Attribute 2 value(s)" not in df.columns:
+            df["Attribute 2 value(s)"] = ""
+
+        # 💥 Forcer la colonne à être du texte nettoyé
+        df["Attribute 2 value(s)"] = df["Attribute 2 value(s)"].fillna("").astype(str).apply(str.strip)
+
         df = supprimer_doublons_colonnes(df)
         print("✅ Colonnes après suppression des doublons :", df.columns.tolist())
 
-        # 🛠️ Ajustement des catégories
         df = ajuster_categories(df)
+        df = formatter_images(df, taille_lot=50)
 
-        # 🖼️ Formatage des images
-        df = formatter_images(df)
-
-        # 🚀 Détection des **produits composites**
+        # Détection des produits composites et définition du type
         df["Composants composites (encodés en JSON)"] = df["Name"].apply(extraire_couleurs_composite)
         df["Type"] = df["Composants composites (encodés en JSON)"].apply(
             lambda x: "composite" if len(x) > 0 else "variable"
         )
 
-        # ✅ Séparer les produits **composites** des **variables**
+        # Séparation entre produits composites et produits variables
         df_composites = df[df["Type"] == "composite"]
         df_variables = df[df["Type"] == "variable"]
 
         print(f"🛠️ Produits composites détectés : {len(df_composites)}")
         print(f"🛠️ Produits variables détectés : {len(df_variables)}")
 
-        # ✅ Détection des produits avec **une seule couleur** pour être variables
-        df_variables["Is_Variable"] = df_variables["Name"].apply(determiner_si_variable)
+        # ✅ Marquage avec protection contre NaN
+        df_variables["Is_Variable"] = df_variables.apply(
+            lambda row: determiner_si_variable(
+                str(row["Name"]),
+                str(row.get("Attribute 2 value(s)", "")).strip() if pd.notnull(row.get("Attribute 2 value(s)")) else ""
+            ),
+            axis=1
+        )
 
-        # ✅ Séparer les **véritables** produits variables
         df_variables_reels = df_variables[df_variables["Is_Variable"]]
-
         print(f"✅ Produits variables réellement éligibles : {len(df_variables_reels)}")
 
-        # 🛠️ Regroupement des **produits variables** par couleur
-        df_variables_regroupes = regrouper_variations_par_couleur(df_variables_reels)
-        print(f"✅ Nombre de produits regroupés : {len(df_variables_regroupes)}")
+        # Séparation selon la présence d'une option taille dans "Attribute 2 value(s)"
+        df_has_size = df_variables_reels[
+            df_variables_reels["Attribute 2 value(s)"].notna() & 
+            (df_variables_reels["Attribute 2 value(s)"].str.strip() != "")
+        ]
+        df_without_size = df_variables_reels[
+            df_variables_reels["Attribute 2 value(s)"].isna() | 
+            (df_variables_reels["Attribute 2 value(s)"].str.strip() == "")
+        ]
 
-        # 🔗 Fusion des produits **variables regroupés** et **composites**
-        df_final = pd.concat([df_composites, df_variables_regroupes], ignore_index=True)
+        # Traitement des produits variables dotés d'une option taille (regroupement par taille)
+        if not df_has_size.empty:
+            df_grouped_size = regrouper_variations_par_taille(df_has_size)
+            print(f"✅ Produits variables regroupés par taille : {len(df_grouped_size)}")
+        else:
+            df_grouped_size = pd.DataFrame()
+            print("ℹ️ Aucun produit avec option taille détecté.")
 
-        # 💾 Export du fichier final
+        # Traitement des produits variables sans option taille (regroupement par couleur)
+        if not df_without_size.empty:
+            df_grouped_color = regrouper_variations_par_couleur(df_without_size)
+            print(f"✅ Produits variables regroupés par couleur : {len(df_grouped_color)}")
+        else:
+            df_grouped_color = pd.DataFrame()
+            print("ℹ️ Aucun produit sans option taille détecté, regroupement couleur non nécessaire.")
+
+        # Fusion de tous les produits finaux (composites, variables par taille et par couleur)
+        df_final = pd.concat([df_composites, df_grouped_size, df_grouped_color], ignore_index=True)
+
+        # Export du fichier final
         nouveau_chemin = os.path.splitext(chemin_fichier)[0] + "_final.csv"
         df_final.to_csv(nouveau_chemin, index=False, sep=",", encoding="utf-8-sig")
         print(f"✅ Fichier final exporté avec toutes les données : {nouveau_chemin}")
@@ -514,4 +629,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
