@@ -186,7 +186,7 @@ def ajuster_categories(df):
 
 def formatter_images(df, taille_lot=100):
     base_url = "https://dev.yolobaby.online/wp-content/uploads/image-site/"
-    
+
     colonnes_images = [
         "Image principale",
         "Image supplémentaire n°1",
@@ -199,70 +199,111 @@ def formatter_images(df, taille_lot=100):
         "Image supplémentaire n°8",
         "Image supplémentaire n°9"
     ]
-    
+
     colonnes_existantes = [col for col in colonnes_images if col in df.columns]
 
     if not colonnes_existantes:
         print("⚠️ Aucune colonne d'image trouvée.")
         return df
 
-    # Fusion des URLs complètes dans une nouvelle colonne temporaire
     df["all_image_urls"] = df[colonnes_existantes].apply(
-        lambda row: [base_url + img.strip() for img in row.dropna().astype(str)], axis=1
+        lambda row: [base_url + img.strip() for img in row.dropna().astype(str)],
+        axis=1
     )
 
-    # Génération directe de la colonne "Images"
     df["Images"] = df["all_image_urls"].apply(lambda urls: ", ".join(urls))
 
-    # --- 👇 Partie désactivée : récupération des IDs depuis l’API + images supplémentaires ---
+    # Cette ligne doit être ici, bien alignée avec les autres
+    toutes_urls = list(set(url for sublist in df["all_image_urls"] for url in sublist))
 
-    # Créer une liste unique de toutes les URLs pour minimiser les appels API
-    # toutes_urls = list(set(url for sublist in df["all_image_urls"] for url in sublist))
+    url_to_id = recuperer_id_images_wp_via_api_batch(toutes_urls, taille_lot)
 
-    # Récupérer les IDs en batch depuis l'API
-    # url_to_id = recuperer_id_images_wp_via_api_batch(toutes_urls, taille_lot)
+    def generer_meta(row):
+        urls_sup = row["all_image_urls"][1:]
+        ids_sup = [str(url_to_id[url]) for url in urls_sup if url in url_to_id]
+        return ",".join(ids_sup)
 
-    # Associer les IDs récupérés aux URLs dans le DataFrame
-    # def generer_meta(row):
-    #     urls_sup = row["all_image_urls"][1:]  # images supplémentaires uniquement
-    #     ids_sup = [str(url_to_id[url]) for url in urls_sup if url in url_to_id]
-    #     return ",".join(ids_sup)
+    df["_wc_additional_variation_images"] = df.apply(generer_meta, axis=1)
 
-    # df["_wc_additional_variation_images"] = df.apply(generer_meta, axis=1)
-
-    # --- ☝️ Fin de la partie désactivée ---
-
-    # Nettoyage
-    df.drop(
-        columns=colonnes_existantes + ["all_image_urls"], inplace=True, errors="ignore"
-    )
+    df.drop(columns=colonnes_existantes + ["all_image_urls"], inplace=True, errors="ignore")
 
     return df
 
 
+
 # --- 👇 Fonction API désactivée mais conservée si besoin futur ---
-# def recuperer_id_images_wp_via_api_batch(urls, taille_lot=100):
-#     api_url = "https://dev.yolobaby.online/api-images.php"
-#     url_to_id = {}
+def recuperer_id_images_wp_via_api_batch(urls, taille_lot=100):
+    api_url = "https://dev.yolobaby.online/api-images.php"
+    url_to_id = {}
 
-#     for i in range(0, len(urls), taille_lot):
-#         lot_urls = urls[i : i + taille_lot]
-#         try:
-#             response = requests.post(
-#                 api_url, json={"urls": lot_urls, "api_key": "12345"}
-#             )
-#             response.raise_for_status()
-#             resultat = response.json()
-#             url_to_id.update(resultat)
-#             print(
-#                 f"✅ Lot {i // taille_lot + 1}/{(len(urls) - 1) // taille_lot + 1} traité avec succès."
-#             )
-#         except requests.RequestException as e:
-#             print(f"❌ Erreur API sur le lot {i // taille_lot + 1}: {e}")
-#             print(f"Réponse reçue : {response.text}")
-#             sleep(1)  # Pause en cas d'erreur pour éviter surcharge API
+    for i in range(0, len(urls), taille_lot):
+        lot_urls = urls[i:i + taille_lot]
+        try:
+            response = requests.post(
+                api_url,
+                json={"urls": lot_urls, "api_key": "12345"}
+            )
+            response.raise_for_status()
+            resultat = response.json()
+            url_to_id.update(resultat)
+            print(
+                f"✅ Lot {i // taille_lot + 1}/{(len(urls) - 1) // taille_lot + 1} traité avec succès."
+            )
+        except requests.RequestException as e:
+            print(f"❌ Erreur API sur le lot {i // taille_lot + 1}: {e}")
+            print(f"Réponse reçue : {response.text}")
+            sleep(1)  # Pause en cas d'erreur pour éviter surcharge API
 
-#     return url_to_id
+    return url_to_id
+
+def convertir_en_json(val):
+    if pd.isna(val) or not isinstance(val, str):
+        return ""
+    val = val.replace("\n", "").replace("\r", "").strip()
+    if ";" in val:
+        title, stock_location = map(str.strip, val.split(";", 1))
+    else:
+        title, stock_location = val.strip(), ""
+    return json.dumps([{"title": title, "stock": 0, "stock_location": stock_location}], ensure_ascii=False)
+
+def transformer_emplacements_en_inventaire(df, zone_col="Stock - Emplacement de stockage", sku_col="SKU"):
+    grouped_inventories = defaultdict(list)
+
+    for _, row in df.iterrows():
+        sku = str(row.get(sku_col, "")).strip()
+        if not sku:
+            continue  # Ignorer si pas de SKU
+
+        # Nettoyage complet de l'emplacement
+        emplacement_raw = str(row.get(zone_col, "")).strip()
+        emplacement_raw = re.sub(r"[\n\r\t\xa0]+", "", emplacement_raw)  # supprime les caractères invisibles
+
+        if not emplacement_raw or emplacement_raw.lower() in ["", "nan", "none"]:
+            continue
+
+        if ";" in emplacement_raw:
+            title, stock_location = map(str.strip, emplacement_raw.split(";", 1))
+        else:
+            title, stock_location = emplacement_raw, ""
+
+        inventory = {
+            "title": title,
+            "stock": 0,
+            "stock_location": stock_location
+        }
+
+        grouped_inventories[sku].append(inventory)
+
+    rows = []
+    for sku, inventories in grouped_inventories.items():
+        rows.append({
+            "SKU": sku,
+            "_mi_inventory_data": json.dumps(inventories, ensure_ascii=False)
+        })
+
+    return pd.DataFrame(rows)
+
+
 
 #
 ############################################
@@ -284,6 +325,26 @@ def normaliser_liste_couleurs(couleurs_brutes: list):
         return ""
     return ", ".join(dict.fromkeys([mapping_couleurs.get(c.lower(), "Non spécifiée").title() for c in couleurs_brutes]))
 
+def detecter_taille_dans_nom(nom_produit: str):
+    if not isinstance(nom_produit, str):
+        return ""
+
+    texte = unicodedata.normalize("NFKD", nom_produit).encode("ascii", "ignore").decode("utf-8").lower()
+
+    patterns = [
+        r"\b\d{1,2}\s?[-àa]\s?\d{1,2}\s?(mois|ans|kg|m|a)\b",
+        r"\b(?:\+|\d{1,2})\s?(mois|ans)\b",
+        r"\b(?:taille\s?)?(\d{1,2}[+]?)\b",
+        r"\b(\d{3,4})\s?(g|grammes|kg)\b",
+        r"\b(premier|1er|2eme|2e|3eme|3e)\s?age\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, texte)
+        if match:
+            return match.group(0).strip()
+
+    return ""
 # 📌 Fonction pour nettoyer le nom du produit en supprimant la couleur
 def nettoyer_nom_produit(nom_produit: str, couleurs: list):
     if not isinstance(nom_produit, str):
@@ -297,63 +358,6 @@ def nettoyer_nom_produit(nom_produit: str, couleurs: list):
     # Enfin, on nettoie les espaces superflus et d'éventuels tirets en fin de chaîne
     nom_produit = re.sub(r'[-\s]+$', '', nom_produit)
     return re.sub(r'\s+', ' ', nom_produit).strip()
-
-# 📌 Fonction pour détecter les produits composites
-def extraire_couleurs_composite(nom_produit: str):
-    """
-    Extrait les couleurs liées aux éléments "Châssis" et "Siège".
-    Un produit est considéré composite s'il a **Châssis** et **Siège** dans le même nom.
-    """
-
-    if not isinstance(nom_produit, str):
-        return {}
-
-    # Normalisation du texte (supprimer accents et mettre en minuscule)
-    nom_lower = unicodedata.normalize("NFKD", nom_produit).encode("ASCII", "ignore").decode("utf-8").lower()
-    resultat = {}
-
-    # Définition des éléments à rechercher
-    elements_couleur = {
-        "Châssis": ["châssis", "chassis"],
-        "Siège": ["siège", "siege", "assise"]
-    }
-
-    # Vérification de la présence des deux termes dans le même nom de produit
-    contient_chassis = any(mot in nom_lower for mot in elements_couleur["Châssis"])
-    contient_siege = any(mot in nom_lower for mot in elements_couleur["Siège"])
-
-    if not (contient_chassis and contient_siege):
-        return {}  # Pas un produit composite
-
-    # Définition des adjectifs ignorés
-    adjectifs_ignores = [
-    "light", "pale", "deep", "bright", "medium",
-    "fonce", "foncé", "clair", "pâle", "flashy", "fluorescent",
-    "cozy", "mirage", "sepia", "peach", "magic", "canvas", "navy"
-    "fog", "stormy", "almond", "leaf", "navy","candy", "fog", "almond", "canvas"
-    
-    # Ajout des adjectifs liés au Châssis
-    "chrome", "matt", "matté", "brillant", "argenté", "dark", "magic"
-    ]
-
-    # Recherche des couleurs pour chaque élément
-    for nom_element, variantes in elements_couleur.items():
-        for variante in variantes:
-            # Correction du regex pour éviter l'erreur "no such group"
-            regex_patterns = [
-                rf"{variante}\s+(?:({'|'.join(adjectifs_ignores)})\s+)?({'|'.join(couleurs_base)})",
-                rf"({'|'.join(couleurs_base)})\s+{variante}"
-            ]
-            for regex in regex_patterns:
-                match = re.search(regex, nom_lower, re.IGNORECASE)
-                if match:
-                    # Vérification si l'adjectif est capturé
-                    couleur_brute = match.group(2) if match.lastindex == 2 else match.group(1)
-                    couleur_normalisee = mapping_couleurs.get(couleur_brute, couleur_brute).title()
-                    resultat[nom_element] = couleur_normalisee
-                    break  # Sortir dès qu'une couleur est trouvée
-
-    return resultat
 
   # Renvoie un dictionnaire contenant les couleurs détectées
 def determiner_si_variable(nom_produit: str, option_taille: str = ""):
@@ -383,7 +387,7 @@ def regrouper_variations_par_couleur(df):
     - Même s’il n’y a qu’un seul produit avec une couleur, on le traite comme un produit variable
       avec une seule variation.
     """
-    # 1) Regrouper par nom nettoyé (sans couleur)
+    # 1 Regrouper par nom nettoyé (sans couleur)
     groupes = {}
     for _, row in df.iterrows():
         nom_original = str(row["Name"])
@@ -394,7 +398,7 @@ def regrouper_variations_par_couleur(df):
     
     liste_resultats = []
 
-    # 2) Traiter chaque groupe
+    # 2 Traiter chaque groupe
     for key, rows in groupes.items():
         couleurs_group = set()
         for row in rows:
@@ -413,7 +417,7 @@ def regrouper_variations_par_couleur(df):
             parent["Name"] = nettoyer_nom_produit(row["Name"], couleurs_group_list).strip()
             parent["Type"] = "variable"
             parent["Attribute 1 name"] = "Couleur"
-            parent["Attribute 1 value(s"] = normaliser_liste_couleurs(couleurs_group_list)
+            parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
             parent["Attribute 1 visible"] = "yes"
             parent["Attribute 1 global"] = "yes"
             parent["Code EAN"] = ""
@@ -423,7 +427,7 @@ def regrouper_variations_par_couleur(df):
             variation["Type"] = "variation"
             variation["Parent SKU"] = parent["SKU"]
             variation["Attribute 1 name"] = "Couleur"
-            variation["Attribute 1 value(s"] = normaliser_liste_couleurs(couleurs_group_list)
+            variation["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
             variation["Attribute 1 visible"] = "yes"
             variation["Attribute 1 global"] = "yes"
             variation["SKU"] = sku_orig + "-V1"  # suffixe pour unicité
@@ -437,7 +441,7 @@ def regrouper_variations_par_couleur(df):
             parent["Name"] = nettoyer_nom_produit(parent["Name"], detecter_toutes_couleurs(parent["Name"])).strip()
             parent["Type"] = "variable"
             parent["Attribute 1 name"] = "Couleur"
-            parent["Attribute 1 value(s"] = normaliser_liste_couleurs(couleurs_group_list)
+            parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
             parent["Attribute 1 visible"] = "yes"
             parent["Attribute 1 global"] = "yes"
             parent["Code EAN"] = ""
@@ -450,7 +454,7 @@ def regrouper_variations_par_couleur(df):
                 variation["Parent SKU"] = parent["SKU"]
                 var_couleurs = detecter_toutes_couleurs(str(variation["Name"]))
                 variation["Attribute 1 name"] = "Couleur"
-                variation["Attribute 1 value(s"] = normaliser_liste_couleurs(var_couleurs)
+                variation["Attribute 1 value(s)"] = normaliser_liste_couleurs(var_couleurs)
                 variation["Attribute 1 visible"] = "yes"
                 variation["Attribute 1 global"] = "yes"
                 if str(variation["SKU"]) == sku_orig:
@@ -465,11 +469,7 @@ def regrouper_variations_par_couleur(df):
     df_final = pd.DataFrame(liste_resultats)
     return df_final
 
-
 def regrouper_variations_par_taille(df):
-    """
-    Regroupe les produits variables par taille.
-    """
     groupes = {}
 
     for _, row in df.iterrows():
@@ -483,15 +483,23 @@ def regrouper_variations_par_taille(df):
 
     for ref, rows in groupes.items():
         tailles_group = set()
+        sku_orig = None
+
         for row in rows:
             taille_raw = row.get("Attribute 2 value(s)", "")
             taille = str(taille_raw).strip() if pd.notnull(taille_raw) else ""
             if taille:
                 tailles_group.add(taille)
+            sku_candidate = str(row.get("SKU", "")).strip()
+            if sku_candidate and sku_candidate.lower() != "nan" and not sku_orig:
+                sku_orig = sku_candidate
+
         tailles_group_list = sorted(list(tailles_group))
 
+        if not sku_orig:
+            sku_orig = "GENERICSKU"
+
         parent = rows[0].copy()
-        sku_orig = str(parent["SKU"]).strip()
         parent["SKU"] = "PARENT-" + sku_orig
         parent["Type"] = "variable"
         parent["Attribute 2 name"] = "Taille"
@@ -516,7 +524,8 @@ def regrouper_variations_par_taille(df):
             variation["Attribute 2 visible"] = "yes"
             variation["Attribute 2 global"] = "yes"
 
-            if str(variation["SKU"]).strip() == sku_orig:
+            variation_sku = str(variation["SKU"]).strip()
+            if not variation_sku or variation_sku.lower() == "nan" or variation_sku == sku_orig:
                 suffix = taille[:2].upper() if taille else "XX"
                 variation["SKU"] = sku_orig + suffix
 
@@ -539,12 +548,19 @@ def main():
         return
 
     try:
-        # Chargement du fichier avec encodage UTF-8
         df = pd.read_csv(chemin_fichier, encoding="utf-8-sig", dtype=str)
         print(f"📂 Fichier chargé : {os.path.basename(chemin_fichier)}")
 
         df.columns = df.columns.str.strip()
         print("🔍 Colonnes détectées :", df.columns.tolist())
+
+        # 🎯 Génération des données ATUM (_mi_inventory_data)
+        if "Stock - Emplacement de stockage" in df.columns and "SKU" in df.columns:
+            df["_mi_inventory_data"] = df["Stock - Emplacement de stockage"].apply(convertir_en_json)
+            print("✅ Colonne _mi_inventory_data générée et insérée dans le DataFrame.")
+        else:
+            print("⚠️ Colonnes 'Stock - Emplacement de stockage' ou 'SKU' manquantes, saut du traitement ATUM.")
+
 
         df = renommer_colonnes_pour_woocommerce(df)
         print("✅ Colonnes après renommage :", df.columns.tolist())
@@ -552,33 +568,27 @@ def main():
         if "Name" not in df.columns:
             raise KeyError(f"❌ La colonne 'Name' est absente après transformation ! Colonnes actuelles : {df.columns.tolist()}")
 
-        # S'assurer que la colonne "Attribute 2 value(s)" existe
         if "Attribute 2 value(s)" not in df.columns:
             df["Attribute 2 value(s)"] = ""
 
-        # 💥 Forcer la colonne à être du texte nettoyé
         df["Attribute 2 value(s)"] = df["Attribute 2 value(s)"].fillna("").astype(str).apply(str.strip)
-
         df = supprimer_doublons_colonnes(df)
+
         print("✅ Colonnes après suppression des doublons :", df.columns.tolist())
 
         df = ajuster_categories(df)
         df = formatter_images(df, taille_lot=50)
+        df_variables = df[df["Type"] == "variable"] if "Type" in df.columns else df.copy()
 
-        # Détection des produits composites et définition du type
-        df["Composants composites (encodés en JSON)"] = df["Name"].apply(extraire_couleurs_composite)
-        df["Type"] = df["Composants composites (encodés en JSON)"].apply(
-            lambda x: "composite" if len(x) > 0 else "variable"
-        )
-
-        # Séparation entre produits composites et produits variables
-        df_composites = df[df["Type"] == "composite"]
-        df_variables = df[df["Type"] == "variable"]
-
-        print(f"🛠️ Produits composites détectés : {len(df_composites)}")
         print(f"🛠️ Produits variables détectés : {len(df_variables)}")
 
-        # ✅ Marquage avec protection contre NaN
+        df_variables["Attribute 2 value(s)"] = df_variables.apply(
+            lambda row: row["Attribute 2 value(s)"]
+            if row["Attribute 2 value(s)"].strip() or len(detecter_toutes_couleurs(row["Name"])) > 0
+            else detecter_taille_dans_nom(row["Name"]),
+            axis=1
+        )
+
         df_variables["Is_Variable"] = df_variables.apply(
             lambda row: determiner_si_variable(
                 str(row["Name"]),
@@ -590,7 +600,6 @@ def main():
         df_variables_reels = df_variables[df_variables["Is_Variable"]]
         print(f"✅ Produits variables réellement éligibles : {len(df_variables_reels)}")
 
-        # Séparation selon la présence d'une option taille dans "Attribute 2 value(s)"
         df_has_size = df_variables_reels[
             df_variables_reels["Attribute 2 value(s)"].notna() & 
             (df_variables_reels["Attribute 2 value(s)"].str.strip() != "")
@@ -600,26 +609,13 @@ def main():
             (df_variables_reels["Attribute 2 value(s)"].str.strip() == "")
         ]
 
-        # Traitement des produits variables dotés d'une option taille (regroupement par taille)
-        if not df_has_size.empty:
-            df_grouped_size = regrouper_variations_par_taille(df_has_size)
-            print(f"✅ Produits variables regroupés par taille : {len(df_grouped_size)}")
-        else:
-            df_grouped_size = pd.DataFrame()
-            print("ℹ️ Aucun produit avec option taille détecté.")
+        df_grouped_size = regrouper_variations_par_taille(df_has_size) if not df_has_size.empty else pd.DataFrame()
+        df_grouped_color = regrouper_variations_par_couleur(df_without_size) if not df_without_size.empty else pd.DataFrame()
 
-        # Traitement des produits variables sans option taille (regroupement par couleur)
-        if not df_without_size.empty:
-            df_grouped_color = regrouper_variations_par_couleur(df_without_size)
-            print(f"✅ Produits variables regroupés par couleur : {len(df_grouped_color)}")
-        else:
-            df_grouped_color = pd.DataFrame()
-            print("ℹ️ Aucun produit sans option taille détecté, regroupement couleur non nécessaire.")
+        df_final = pd.concat([df_grouped_size, df_grouped_color], ignore_index=True)
+        df_final.drop_duplicates(subset=["SKU", "Name", "Attribute 2 value(s)"], inplace=True)
 
-        # Fusion de tous les produits finaux (composites, variables par taille et par couleur)
-        df_final = pd.concat([df_composites, df_grouped_size, df_grouped_color], ignore_index=True)
-
-        # Export du fichier final
+        df_final["SKU"] = df_final["SKU"].astype(str).str.strip()
         nouveau_chemin = os.path.splitext(chemin_fichier)[0] + "_final.csv"
         df_final.to_csv(nouveau_chemin, index=False, sep=",", encoding="utf-8-sig")
         print(f"✅ Fichier final exporté avec toutes les données : {nouveau_chemin}")

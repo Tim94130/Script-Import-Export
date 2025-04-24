@@ -4,6 +4,7 @@ require_once(__DIR__ . '/wp-load.php');
 
 header('Content-Type: application/json');
 $api_key_valid = '12345';
+
 $data = json_decode(file_get_contents('php://input'), true);
 
 if (!isset($data['api_key']) || $data['api_key'] !== $api_key_valid) {
@@ -11,16 +12,18 @@ if (!isset($data['api_key']) || $data['api_key'] !== $api_key_valid) {
     exit;
 }
 
-if (!isset($data['urls']) || !is_array($data['urls'])) {
-    echo json_encode(['error' => 'Aucune URL fournie']);
+if (!isset($data['mappings']) || !is_array($data['mappings'])) {
+    echo json_encode(['error' => 'Aucun mapping SKU/image_url fourni']);
     exit;
 }
 
 global $wpdb;
 $upload_dir = wp_upload_dir();
-$resultats = [];
+$results = [];
 
-// Fonction : retrouver l'ID d'un média à partir de son URL
+/**
+ * Retrouve l’ID d’un média depuis son URL
+ */
 function get_attachment_id_by_url($url) {
     global $wpdb;
     $upload_dir = wp_upload_dir();
@@ -33,25 +36,59 @@ function get_attachment_id_by_url($url) {
     ));
 }
 
-// Traitement des URLs reçues
-foreach ($data['urls'] as $url) {
-    $start = microtime(true);
-    $id = get_attachment_id_by_url($url);
-    $time_total = round(microtime(true) - $start, 4);
-
-    if ($id) {
-        $resultats[$url] = [
-            'id' => intval($id),
-            'note' => 'déjà présent',
-            'time_total' => "{$time_total}s"
-        ];
-    } else {
-        $resultats[$url] = [
-            'erreur' => 'Fichier non trouvé dans la médiathèque',
-            'time_total' => "{$time_total}s"
-        ];
+/**
+ * Associe une image à une variation WooCommerce
+ */
+function assign_image_to_variation($variation_id, $image_id) {
+    if (!wp_attachment_is_image($image_id)) {
+        return false;
     }
+    return update_post_meta($variation_id, '_thumbnail_id', $image_id);
 }
 
-echo json_encode($resultats);
+/**
+ * Trouve une variation produit via son SKU
+ */
+function get_product_variation_by_sku($sku) {
+    $product_id = wc_get_product_id_by_sku($sku);
+    if (!$product_id) return null;
+
+    $product = wc_get_product($product_id);
+    return ($product && $product->is_type('variation')) ? $product : null;
+}
+
+// Traitement de chaque mapping
+foreach ($data['mappings'] as $mapping) {
+    $sku = isset($mapping['sku']) ? sanitize_text_field($mapping['sku']) : null;
+    $image_url = isset($mapping['image_url']) ? esc_url_raw($mapping['image_url']) : null;
+
+    if (!$sku || !$image_url) {
+        $results[] = ['sku' => $sku, 'status' => 'error', 'message' => 'SKU ou URL manquant'];
+        continue;
+    }
+
+    $variation = get_product_variation_by_sku($sku);
+    $image_id = get_attachment_id_by_url($image_url);
+
+    if (!$variation) {
+        $results[] = ['sku' => $sku, 'status' => 'error', 'message' => 'Variation non trouvée'];
+        continue;
+    }
+
+    if (!$image_id) {
+        $results[] = ['sku' => $sku, 'status' => 'error', 'message' => 'Image non trouvée dans la médiathèque'];
+        continue;
+    }
+
+    $success = assign_image_to_variation($variation->get_id(), $image_id);
+    $results[] = [
+        'sku' => $sku,
+        'variation_id' => $variation->get_id(),
+        'image_id' => $image_id,
+        'status' => $success ? 'success' : 'error',
+        'message' => $success ? 'Image assignée à la variation' : 'Erreur lors de l’assignation'
+    ];
+}
+
+echo json_encode($results, JSON_PRETTY_PRINT);
 exit;
