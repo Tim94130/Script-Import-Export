@@ -29,122 +29,6 @@ adjectifs_ignores = [
     "fluorescent",
 ]
 
-couleurs_base = [
-    "white",
-    "black",
-    "brown",
-    "blue",
-    "red",
-    "pink",
-    "green",
-    "grey",
-    "gray",
-    "yellow",
-    "orange",
-    "purple",
-    "violet",
-    "beige",
-    "gold",
-    "silver",
-    "taupe",
-    "cyan",
-    "magenta",
-    "navy",
-    "maroon",
-    "lime",
-    "olive",
-    "teal",
-    "aqua",
-    "blanc",
-    "noir",
-    "marron",
-    "brun",
-    "bleu",
-    "rouge",
-    "rose",
-    "vert",
-    "gris",
-    "jaune",
-    "violet",
-    "beige",
-    "doré",
-    "argent",
-    "kaki",
-    "turquoise",
-    "fuchsia",
-    "lavande",
-    "ocre",
-    "ivory",
-    "ivoires",
-    "argenté",
-    "rose gold",
-    "off white",
-    "peach pink",
-    "sepia black",
-    "golden",
-    "sable",
-    "chocolat",
-    "prune",
-    "dark brown",
-]
-
-mapping_couleurs = {
-    "white": "Blanc",
-    "off white": "Blanc cassé",
-    "ivory": "Blanc cassé",
-    "blanc": "Blanc",
-    "dark brown": "Marron",
-    "black": "Noir",
-    "noir": "Noir",
-    "sepia black": "Noir",
-    "brown": "Marron",
-    "brun": "Marron",
-    "marron": "Marron",
-    "chocolat": "Marron",
-    "red": "Rouge",
-    "rouge": "Rouge",
-    "pink": "Rose",
-    "rose": "Rose",
-    "peach pink": "Rose",
-    "green": "Vert",
-    "vert": "Vert",
-    "leaf green": "Vert",
-    "grey": "Gris",
-    "gray": "Gris",
-    "gris": "Gris",
-    "mirage grey": "Gris",
-    "yellow": "Jaune",
-    "jaune": "Jaune",
-    "orange": "Orange",
-    "purple": "Violet",
-    "violet": "Violet",
-    "lavande": "Violet",
-    "prune": "Violet",
-    "beige": "Beige",
-    "sable": "Beige",
-    "taupe": "Taupe",
-    "gold": "Doré",
-    "golden": "Doré",
-    "rose gold": "Rose Gold",
-    "silver": "Argent",
-    "argent": "Argent",
-    "argenté": "Argent",
-    "kaki": "Kaki",
-    "fuchsia": "Fuchsia",
-    "magenta": "Fuchsia",
-    "blue": "Bleu",
-    "bleu": "Bleu",
-    "navy": "Bleu marine",
-    "cyan": "Cyan",
-    "aqua": "Cyan",
-    "turquoise": "Turquoise",
-    "maroon": "Bordeaux",
-    "bordeaux": "Bordeaux",
-    "lime": "Vert clair",
-    "olive": "Vert olive",
-    "teal": "Bleu-vert",
-}
-
 
 ############################################
 # Fonctions de transformation du CSV
@@ -411,27 +295,71 @@ def transformer_emplacements_en_inventaire(df):
 
 
 def detecter_toutes_couleurs(nom_produit: str):
+    couleur = extraire_couleur_libre(nom_produit)
+    return [couleur] if couleur else []
+
+def extraire_couleur_libre(nom_produit: str, debug=False):
+    """
+    Extrait une couleur depuis le nom du produit.
+    Cherche une couleur de base dans toute la chaîne,
+    puis tente de l'enrichir avec l'adjectif devant ou derrière,
+    même après un tiret ou dans des groupes de mots.
+    """
+    import unicodedata
+    import re
+
     if not isinstance(nom_produit, str):
-        return []
-
-    tokens = re.split(r"[\s\-\|\(\),/]+", nom_produit.lower())
-    trouvees = [mapping_couleurs[t] for t in tokens if t in mapping_couleurs]
-
-    return list(dict.fromkeys(trouvees))  # Supprime les doublons
-
-
-# 📌 Fonction pour normaliser une liste de couleurs
-def normaliser_liste_couleurs(couleurs_brutes: list):
-    if not couleurs_brutes:
         return ""
-    return ", ".join(
-        dict.fromkeys(
-            [
-                mapping_couleurs.get(c.lower(), "Non spécifiée").title()
-                for c in couleurs_brutes
-            ]
-        )
-    )
+
+    # Nettoyage Unicode et suppression de la marque après |
+    texte = unicodedata.normalize("NFKD", nom_produit).encode("ascii", "ignore").decode("utf-8")
+    texte = texte.split("|")[0].strip()
+
+    # Ne découpe pas brutalement au tiret, mais conserve les blocs de mots
+    blocs = re.split(r"[/,]+", texte)
+    mots = []
+    for bloc in blocs:
+        sous_mots = bloc.strip().split()
+        mots.extend(sous_mots)
+
+    mots_bas = [m.lower() for m in mots]
+
+    couleurs_base = {
+        "white", "black", "brown", "blue", "red", "pink", "green",
+        "grey", "gray", "yellow", "orange", "purple", "beige",
+        "gold", "silver", "cyan", "magenta", "navy", "maroon",
+        "lime", "olive", "teal", "aqua", "blanc", "noir", "marron", "brun",
+        "bleu", "rouge", "rose", "vert", "gris", "jaune", "violet", "kaki",
+        "doré", "argent", "turquoise", "fuchsia", "lavande", "sable",
+        "prune", "sepia", "chocolat"
+    }
+
+    mots_interdits = {
+        "eco", "base", "fix", "t", "pack", "set", "lot", "urban", "mobility", "plus", "confort",
+        "ans", "mois", "age", "taille", "tissu", "i-size", "kg", "cm", "g", "isofix", "pivot",
+        "line", "size", "tissus", "pour", "de", "avec", "sans", "one", "solution", "insert", "sirona", "cloud"
+    }.union(set(str(i) for i in range(0, 3000)))
+
+    for i, mot in enumerate(mots_bas):
+        if mot in couleurs_base:
+            # Récupère un adjectif éventuel avant ou après
+            adj_avant = mots[i - 1] if i > 0 and mots_bas[i - 1] not in mots_interdits else ""
+            adj_apres = mots[i + 1] if i + 1 < len(mots) and mots_bas[i + 1] not in mots_interdits else ""
+            if adj_avant:
+                couleur = f"{adj_avant} {mots[i]}"
+            elif adj_apres:
+                couleur = f"{mots[i]} {adj_apres}"
+            else:
+                couleur = mots[i]
+            if debug:
+                print(f"🎨 Couleur détectée : '{couleur}' dans '{nom_produit}'")
+            return couleur.strip()
+
+    if debug:
+        print(f"🚫 Aucune couleur détectée dans : '{nom_produit}'")
+    return ""
+
+
 
 
 def detecter_taille_dans_nom(nom_produit: str):
@@ -465,13 +393,20 @@ def detecter_taille_dans_nom(nom_produit: str):
 def nettoyer_nom_produit(nom_produit: str, couleurs: list):
     if not isinstance(nom_produit, str):
         return nom_produit
-    # On retire d'abord les couleurs (s'il y en a) en tant que mots entiers
+
     for couleur in couleurs:
-        nom_produit = re.sub(rf"\b{couleur}\b", "", nom_produit, flags=re.IGNORECASE)
-    # Puis, si le nom contient " - ", on prend uniquement la partie avant
+        try:
+            couleur_safe = re.escape(couleur)
+            nouveau_nom = re.sub(rf"\b{couleur_safe}\b", "", nom_produit, flags=re.IGNORECASE)
+            if nouveau_nom != nom_produit:
+                print(f"🧹 Suppression de la couleur '{couleur}' dans : {nom_produit}")
+            nom_produit = nouveau_nom
+        except Exception as e:
+            print(f"❌ Erreur lors du nettoyage de la couleur '{couleur}' : {e}")
+
     if " - " in nom_produit:
         nom_produit = nom_produit.split(" - ")[0]
-    # Enfin, on nettoie les espaces superflus et d'éventuels tirets en fin de chaîne
+
     nom_produit = re.sub(r"[-\s]+$", "", nom_produit)
     return re.sub(r"\s+", " ", nom_produit).strip()
 
@@ -497,6 +432,10 @@ def determiner_si_variable(nom_produit: str, option_taille: str = ""):
 
 
 def regrouper_variations_par_taille(df):
+    """
+    Regroupe les produits par nom sans taille. Chaque groupe est traité comme un produit variable,
+    même s’il contient une seule variation.
+    """
     groupes = {}
 
     for idx, row in df.iterrows():
@@ -512,57 +451,65 @@ def regrouper_variations_par_taille(df):
 
     liste_resultats = []
 
-    for ref, lignes in groupes.items():
+    for key, lignes in groupes.items():
         tailles_group = set()
-        idx0, base_row = lignes[0]
-        sku_orig, ean_orig = generer_sku_et_ean_fallback(base_row, index=idx0)
-
         for _, row in lignes:
             taille = str(row.get("Attribute 2 value(s)", "")).strip()
             if taille:
                 tailles_group.add(taille)
 
-        tailles_group_list = sorted(list(tailles_group))
+        tailles_group_list = sorted(tailles_group)
+        idx0, base_row = lignes[0]
+        sku_orig, ean_orig = generer_sku_et_ean_fallback(base_row, index=idx0)
 
+        # ➕ Produit parent
         parent = base_row.copy()
         parent["SKU"] = "PARENT-" + sku_orig
+        parent["Name"] = nettoyer_nom_produit(parent["Name"], tailles_group_list)
         parent["Type"] = "variable"
         parent["Attribute 2 name"] = "Taille"
         parent["Attribute 2 value(s)"] = ", ".join(tailles_group_list)
         parent["Attribute 2 visible"] = "yes"
         parent["Attribute 2 global"] = "yes"
-        parent["Parent SKU"] = ""
         parent["Code EAN"] = ""
+        parent["Parent SKU"] = ""
         liste_resultats.append(parent)
 
+        # ➕ Variations (même s’il n’y en a qu’une)
         for idx, row in lignes:
             variation = row.copy()
+            taille = str(variation.get("Attribute 2 value(s)", "")).strip()
+
             variation["Type"] = "variation"
             variation["Parent SKU"] = parent["SKU"]
             variation["Attribute 2 name"] = "Taille"
-            taille = str(variation.get("Attribute 2 value(s)", "")).strip()
             variation["Attribute 2 value(s)"] = taille
             variation["Attribute 2 visible"] = "yes"
             variation["Attribute 2 global"] = "yes"
 
             if not variation.get("SKU"):
-                variation["SKU"] = sku_orig
+                variation["SKU"], _ = generer_sku_et_ean_fallback(variation, index=idx)
             if not variation.get("Code EAN"):
-                variation["Code EAN"] = ean_orig
+                _, variation["Code EAN"] = generer_sku_et_ean_fallback(variation, index=idx)
 
             liste_resultats.append(variation)
 
     return pd.DataFrame(liste_resultats)
 
 
+
 def regrouper_variations_par_couleur(df):
+    """
+    Regroupe les produits par nom sans couleur. Chaque groupe devient un produit variable,
+    même s’il n’a qu’un seul élément.
+    """
     groupes = {}
 
     for idx, row in df.iterrows():
         try:
             nom_original = str(row["Name"])
-            couleurs_detectees = detecter_toutes_couleurs(nom_original)
-            nom_sans_couleur = nettoyer_nom_produit(nom_original, couleurs_detectees).strip()
+            couleur_extraite = extraire_couleur_libre(nom_original)
+            nom_sans_couleur = nettoyer_nom_produit(nom_original, [couleur_extraite]).strip()
             key = nom_sans_couleur.lower()
             groupes.setdefault(key, []).append((idx, row.to_dict()))
         except Exception as e:
@@ -574,72 +521,48 @@ def regrouper_variations_par_couleur(df):
     for key, lignes in groupes.items():
         couleurs_group = set()
         for _, row in lignes:
-            couleurs_group.update(detecter_toutes_couleurs(str(row.get("Name", ""))))
+            couleur = extraire_couleur_libre(row.get("Name", ""))
+            if couleur:
+                couleurs_group.add(couleur)
 
         couleurs_group_list = list(couleurs_group)
-
         idx0, base_row = lignes[0]
         sku_orig, ean_orig = generer_sku_et_ean_fallback(base_row, index=idx0)
 
-        if len(lignes) == 1 and len(couleurs_group_list) == 1:
-            parent = base_row.copy()
-            variation = base_row.copy()
+        # ➕ Produit parent
+        parent = base_row.copy()
+        parent["SKU"] = "PARENT-" + sku_orig
+        parent["Name"] = nettoyer_nom_produit(parent["Name"], couleurs_group_list)
+        parent["Type"] = "variable"
+        parent["Attribute 1 name"] = "Couleur"
+        parent["Attribute 1 value(s)"] = ", ".join(couleurs_group_list)
+        parent["Attribute 1 visible"] = "yes"
+        parent["Attribute 1 global"] = "yes"
+        parent["Code EAN"] = ""
+        parent["Parent SKU"] = ""
+        liste_resultats.append(parent)
 
-            parent["SKU"] = "PARENT-" + sku_orig
-            parent["Name"] = nettoyer_nom_produit(parent["Name"], couleurs_group_list)
-            parent["Type"] = "variable"
-            parent["Attribute 1 name"] = "Couleur"
-            parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
-            parent["Attribute 1 visible"] = "yes"
-            parent["Attribute 1 global"] = "yes"
-            parent["Code EAN"] = ""
-            parent["Parent SKU"] = ""
-            liste_resultats.append(parent)
-
+        # ➕ Variations (même s’il n’y en a qu’une)
+        for idx, row in lignes:
+            variation = row.copy()
+            couleur = extraire_couleur_libre(variation.get("Name", ""))
             variation["Type"] = "variation"
             variation["Parent SKU"] = parent["SKU"]
             variation["Attribute 1 name"] = "Couleur"
-            variation["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
+            variation["Attribute 1 value(s)"] = couleur
             variation["Attribute 1 visible"] = "yes"
             variation["Attribute 1 global"] = "yes"
-            variation["SKU"] = sku_orig
-            variation["Code EAN"] = ean_orig
+
+            if not variation.get("SKU"):
+                variation["SKU"], _ = generer_sku_et_ean_fallback(variation, index=idx)
+            if not variation.get("Code EAN"):
+                _, variation["Code EAN"] = generer_sku_et_ean_fallback(variation, index=idx)
+
             liste_resultats.append(variation)
 
-        elif len(lignes) > 1:
-            parent = base_row.copy()
-            parent["SKU"] = "PARENT-" + sku_orig
-            parent["Name"] = nettoyer_nom_produit(parent["Name"], couleurs_group_list)
-            parent["Type"] = "variable"
-            parent["Attribute 1 name"] = "Couleur"
-            parent["Attribute 1 value(s)"] = normaliser_liste_couleurs(couleurs_group_list)
-            parent["Attribute 1 visible"] = "yes"
-            parent["Attribute 1 global"] = "yes"
-            parent["Code EAN"] = ""
-            parent["Parent SKU"] = ""
-            liste_resultats.append(parent)
-
-            for idx, row in lignes:
-                variation = row.copy()
-                variation["Type"] = "variation"
-                variation["Parent SKU"] = parent["SKU"]
-                var_couleurs = detecter_toutes_couleurs(str(variation["Name"]))
-                variation["Attribute 1 name"] = "Couleur"
-                variation["Attribute 1 value(s)"] = normaliser_liste_couleurs(var_couleurs)
-                variation["Attribute 1 visible"] = "yes"
-                variation["Attribute 1 global"] = "yes"
-
-                if not variation.get("SKU"):
-                    variation["SKU"] = sku_orig
-                if not variation.get("Code EAN"):
-                    variation["Code EAN"] = ean_orig
-
-                liste_resultats.append(variation)
-
-        else:
-            print(f"ℹ️ Groupe ignoré (pas de couleur détectée) : {key}")
-
     return pd.DataFrame(liste_resultats)
+
+
 
 
 def main():
