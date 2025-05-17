@@ -133,7 +133,7 @@ def ajuster_categories(df):
     return df
 
 
-def formatter_images(df, taille_lot=100):
+def formatter_images(df):
     base_url = "https://dev.yolobaby.online/wp-content/uploads/image-site/"
 
     colonnes_images = [
@@ -149,88 +149,18 @@ def formatter_images(df, taille_lot=100):
         "Image supplémentaire n°9",
     ]
 
-    colonnes_existantes = [col for col in colonnes_images if col in df.columns]
-
-    if not colonnes_existantes:
+    cols = [c for c in colonnes_images if c in df.columns]
+    if not cols:
         print("⚠️ Aucune colonne d'image trouvée.")
         return df
 
-    df["all_image_urls"] = df[colonnes_existantes].apply(
-        lambda row: [base_url + img.strip() for img in row.dropna().astype(str)], axis=1
-    )
+    # Concatène directement les URLs dans la colonne Images
+    df["Images"] = df[cols] \
+        .apply(lambda row: ", ".join(base_url + img.strip() for img in row.dropna().astype(str)), axis=1)
 
-    df["Images"] = df["all_image_urls"].apply(lambda urls: ", ".join(urls))
-
-    # Cette ligne doit être ici, bien alignée avec les autres
-    toutes_urls = list(set(url for sublist in df["all_image_urls"] for url in sublist))
-
-    url_to_id = recuperer_id_images_wp_via_api_batch(toutes_urls, taille_lot)
-
-    def generer_meta(row):
-        urls_sup = row["all_image_urls"][1:]
-        ids_sup = [str(url_to_id[url]) for url in urls_sup if url in url_to_id]
-        return ",".join(ids_sup)
-
-    df["_wc_additional_variation_images"] = df.apply(generer_meta, axis=1)
-
-    df.drop(
-        columns=colonnes_existantes + ["all_image_urls"], inplace=True, errors="ignore"
-    )
-
+    # Supprime les colonnes source
+    df.drop(columns=cols, inplace=True, errors="ignore")
     return df
-
-
-# --- 👇 Fonction API désactivée mais conservée si besoin futur ---
-def recuperer_id_images_wp_via_api_batch(urls, taille_lot=100):
-    api_url = "https://dev.yolobaby.online/api-images.php"
-    url_to_id = {}
-
-    for i in range(0, len(urls), taille_lot):
-        lot_urls = urls[i:i + taille_lot]
-        try:
-            response = requests.post(
-                api_url,
-                json={"urls": lot_urls, "api_key": "12345"},
-                timeout=10
-            )
-            response.raise_for_status()
-            resultat = response.json()
-            url_to_id.update(resultat)
-            print(f"✅ Lot {i // taille_lot + 1}/{(len(urls) - 1) // taille_lot + 1} traité avec succès.")
-
-        except requests.RequestException as e:
-            print(f"❌ Erreur API sur le lot {i // taille_lot + 1}: {e}")
-
-            # Essayer de récupérer une réponse textuelle si possible
-            try:
-                print("Réponse API :", response.text)
-            except NameError:
-                print("⚠️ Aucune réponse n’a été reçue (response non définie).")
-            except Exception as ex:
-                print(f"⚠️ Impossible d’afficher la réponse : {ex}")
-
-            sleep(1)  # Pause pour éviter surcharge serveur
-
-    return url_to_id
-
-
-
-def convertir_en_json(val, stock):
-    if pd.isna(val) or not isinstance(val, str):
-        return ""
-    val = val.replace("\n", "").replace("\r", "").strip()
-    if ";" in val:
-        title, stock_location = map(str.strip, val.split(";", 1))
-    else:
-        title, stock_location = val.strip(), ""
-    try:
-        stock_int = int(float(stock)) if pd.notna(stock) else 0
-    except:
-        stock_int = 0
-    return json.dumps(
-        [{"title": title, "stock": stock_int, "stock_location": stock_location}],
-        ensure_ascii=False,
-    )
 
 
 def transformer_emplacements_en_inventaire(df):
@@ -305,8 +235,6 @@ def extraire_couleur_libre(nom_produit: str, debug=False):
     puis tente de l'enrichir avec l'adjectif devant ou derrière,
     même après un tiret ou dans des groupes de mots.
     """
-    import unicodedata
-    import re
 
     if not isinstance(nom_produit, str):
         return ""
@@ -591,22 +519,7 @@ def main():
             print(f"⚠️ Colonnes dupliquées détectées : {colonnes_dupliquees}")
             df = df.loc[:, ~df.columns.duplicated()]
             print("✅ Colonnes dupliquées supprimées.")
-
-        print("🟢 ÉTAPE 3 — Génération _mi_inventory_data")
-        if "Stock - Emplacement de stockage" in df.columns and "Stock" in df.columns:
-            def convertir_en_json_sécurisé(row):
-                try:
-                    val = row.get("Stock - Emplacement de stockage", "")
-                    stock = row.get("Stock", "0")
-                    return convertir_en_json(val, stock)
-                except Exception as e:
-                    print(f"❌ Erreur JSON Stock (SKU: {row.get('SKU', '')}) : {e}")
-                    return ""
-            df["_mi_inventory_data"] = df.apply(convertir_en_json_sécurisé, axis=1)
-            print("✅ Colonne _mi_inventory_data générée.")
-        else:
-            print("⚠️ Colonnes manquantes pour ATUM. Saut du traitement.")
-
+        
         print("🟢 ÉTAPE 4 — Renommage colonnes WooCommerce")
         df = renommer_colonnes_pour_woocommerce(df)
 
@@ -616,12 +529,17 @@ def main():
         if "Attribute 2 value(s)" not in df.columns:
             df["Attribute 2 value(s)"] = ""
 
-        df["Attribute 2 value(s)"] = df["Attribute 2 value(s)"].fillna("").astype(str).apply(str.strip)
+        df["Attribute 2 value(s)"] = (
+            df["Attribute 2 value(s)"]
+            .fillna("")
+            .astype(str)
+            .apply(str.strip)
+        )
         df = supprimer_doublons_colonnes(df)
         df = ajuster_categories(df)
 
         print("🟢 ÉTAPE 5 — Formatter images")
-        df = formatter_images(df, taille_lot=50)
+        df = formatter_images(df)  # plus de taille_lot
 
         if not df.index.is_unique:
             print("⚠️ Index dupliqué après formatter_images() → reset.")
@@ -656,8 +574,14 @@ def main():
             (df_variables_reels["Attribute 2 value(s)"].str.strip() == "")
         ]
 
-        df_grouped_size = regrouper_variations_par_taille(df_has_size) if not df_has_size.empty else pd.DataFrame()
-        df_grouped_color = regrouper_variations_par_couleur(df_without_size) if not df_without_size.empty else pd.DataFrame()
+        df_grouped_size = (
+            regrouper_variations_par_taille(df_has_size)
+            if not df_has_size.empty else pd.DataFrame()
+        )
+        df_grouped_color = (
+            regrouper_variations_par_couleur(df_without_size)
+            if not df_without_size.empty else pd.DataFrame()
+        )
 
         print("📊 Vérification des index AVANT concaténation :")
         if not df_grouped_size.empty:
@@ -674,10 +598,13 @@ def main():
 
         print("🟢 ÉTAPE 8 — Concaténation des produits variables")
         df_final = pd.concat([df_grouped_size, df_grouped_color], ignore_index=True)
-        df_final.index = pd.RangeIndex(len(df_final))  # 🔐 Anti-crash index
+        df_final.index = pd.RangeIndex(len(df_final))
 
         print("🟢 ÉTAPE 9 — Nettoyage final avant export")
-        df_final.drop_duplicates(subset=["SKU", "Name", "Attribute 2 value(s)"], inplace=True)
+        df_final.drop_duplicates(
+            subset=["SKU", "Name", "Attribute 2 value(s)"],
+            inplace=True
+        )
         df_final = df_final.reset_index(drop=True)
         df_final["SKU"] = df_final["SKU"].astype(str).str.strip()
 
